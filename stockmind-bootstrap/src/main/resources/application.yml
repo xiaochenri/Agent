@@ -1,0 +1,26 @@
+spring:
+  config:
+    import: optional:classpath:application-agent-runtime.yml
+  application:
+    name: stockmind-agent
+  datasource:
+    url: jdbc:mysql://101.35.234.55:3306/flower-test?useSSL=false&serverTimezone=UTC&characterEncoding=UTF-8
+    username: root
+    password: Szcs_666_!@#$
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+stockmind:
+  knowledge:
+    vector:
+      table: stock_doc_vector
+      dimensions: 1024
+      default-top-k: 5

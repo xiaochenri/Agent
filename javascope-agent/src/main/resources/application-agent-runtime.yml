@@ -1,0 +1,11 @@
+java:
+  agent-runtime:
+    provider: ${AGENT_RUNTIME_PROVIDER:openai}
+    model: ${AGENT_RUNTIME_MODEL:deepseek-chat}
+    api-key: ${AGENT_RUNTIME_API_KEY:sk-d6923b598ef1456d9f7785ba50c18b57}
+    base-url: ${AGENT_RUNTIME_BASE_URL:https://api.deepseek.com/v1}
+    system-instruction: 你是通用任务执行器，输出必须为 JSON。
+    max-rounds: 3
+    plan-max-retry: 2
+    temperature: 0.2
+    timeout-seconds: 60

@@ -1,0 +1,652 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent 对话页面</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --card: #ffffff;
+      --text: #17212b;
+      --muted: #6b7a8c;
+      --primary: #0b6bcb;
+      --border: #d9e1ec;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: radial-gradient(circle at top right, #e7f1ff 0%, var(--bg) 45%);
+      color: var(--text);
+    }
+    .container {
+      max-width: 960px;
+      margin: 24px auto;
+      padding: 0 16px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.05);
+      padding: 16px;
+    }
+    .main-layout {
+      display: grid;
+      grid-template-columns: 180px 1fr;
+      gap: 14px;
+      align-items: start;
+    }
+    .menu {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #f8fbff;
+      padding: 10px;
+      position: sticky;
+      top: 12px;
+    }
+    .menu-title {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .menu-btn {
+      width: 100%;
+      text-align: left;
+      background: #eef4fc;
+      color: #1d4f85;
+      border: 1px solid #d4e1f1;
+      margin-bottom: 8px;
+    }
+    .menu-btn.active {
+      background: var(--primary);
+      color: #fff;
+      border-color: var(--primary);
+    }
+    .panel {
+      display: none;
+    }
+    .panel.active {
+      display: block;
+    }
+    .title {
+      margin: 0 0 12px;
+      font-size: 20px;
+      font-weight: 600;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .field label {
+      display: block;
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    input, textarea, select, button {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      font-size: 14px;
+      padding: 10px 12px;
+      outline: none;
+    }
+    textarea {
+      min-height: 92px;
+      resize: vertical;
+      font-family: inherit;
+    }
+    select {
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      background-color: #fff;
+      background-image: linear-gradient(45deg, transparent 50%, #5b6f86 50%), linear-gradient(135deg, #5b6f86 50%, transparent 50%);
+      background-position: calc(100% - 18px) calc(50% - 3px), calc(100% - 12px) calc(50% - 3px);
+      background-size: 6px 6px, 6px 6px;
+      background-repeat: no-repeat;
+      padding-right: 34px;
+    }
+    input:focus, textarea:focus, select:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(11, 107, 203, 0.12);
+    }
+    button {
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button:disabled {
+      opacity: 0.7;
+      cursor: not-allowed;
+    }
+    .actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .ghost {
+      background: #f0f5fc;
+      color: #1d4f85;
+    }
+    .chat-layout {
+      margin-top: 16px;
+      display: grid;
+      grid-template-columns: 230px 1fr;
+      gap: 12px;
+    }
+    .round-box {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #f8fbff;
+      padding: 10px;
+      max-height: 60vh;
+      overflow: auto;
+    }
+    .round-title {
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .round-item {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 10px;
+      margin-bottom: 8px;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .round-head {
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .round-detail-list {
+      margin: 0;
+      padding-left: 16px;
+      color: #42566b;
+    }
+    .round-detail-list li {
+      margin-bottom: 4px;
+    }
+    .chat-box {
+      max-height: 60vh;
+      overflow: auto;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #fbfdff;
+    }
+    .msg {
+      margin-bottom: 14px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .user { background: #eaf3ff; }
+    .assistant { background: #f3f6fb; }
+    .meta {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+    .memory-card {
+      margin-top: 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #f8fbff;
+      padding: 12px;
+    }
+    .memory-title {
+      margin: 0 0 10px;
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .memory-row {
+      display: grid;
+      grid-template-columns: 180px 1fr 130px 140px;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .memory-status {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 8px;
+      min-height: 18px;
+    }
+    .memory-list {
+      max-height: 220px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #fff;
+    }
+    .memory-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .memory-table th, .memory-table td {
+      text-align: left;
+      padding: 8px;
+      border-bottom: 1px solid #edf2f7;
+      vertical-align: top;
+    }
+    .memory-table th {
+      position: sticky;
+      top: 0;
+      background: #f5f9ff;
+      color: #35506c;
+      z-index: 1;
+    }
+    .memory-actions {
+      display: flex;
+      gap: 6px;
+    }
+    .tiny-btn {
+      border: 1px solid var(--border);
+      background: #f0f5fc;
+      color: #1d4f85;
+      padding: 4px 8px;
+      border-radius: 8px;
+      font-size: 12px;
+      cursor: pointer;
+      width: auto;
+    }
+    @media (max-width: 768px) {
+      .main-layout { grid-template-columns: 1fr; }
+      .row { grid-template-columns: 1fr; }
+      .chat-layout { grid-template-columns: 1fr; }
+      .chat-box { margin-top: 0; }
+      .memory-row { grid-template-columns: 1fr; }
+      .menu { position: static; }
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <h1 class="title">Agent 对话模式</h1>
+
+    <div class="main-layout">
+      <aside class="menu">
+        <div class="menu-title">功能菜单</div>
+        <button id="menuChatBtn" class="menu-btn active" type="button">对话</button>
+        <button id="menuMemoryBtn" class="menu-btn" type="button">记忆</button>
+      </aside>
+
+      <div>
+        <div id="panelChat" class="panel active">
+          <div class="row">
+            <div class="field">
+              <label for="sessionId">sessionId</label>
+              <input id="sessionId" value="chat-001" />
+            </div>
+            <div class="field">
+              <label for="userId">userId</label>
+              <input id="userId" value="demo-user" />
+            </div>
+          </div>
+          <div class="field">
+            <label for="input">输入内容</label>
+            <textarea id="input" placeholder="输入你的问题..."></textarea>
+          </div>
+          <div class="actions">
+            <button id="sendBtn" type="button">发送</button>
+            <button id="clearBtn" class="ghost" type="button">清空会话窗口</button>
+          </div>
+          <div class="chat-layout">
+            <div class="round-box">
+              <div class="round-title">每轮模型调用次数</div>
+              <div id="roundStats"></div>
+            </div>
+            <div id="chatBox" class="chat-box"></div>
+          </div>
+        </div>
+
+        <div id="panelMemory" class="panel">
+          <div class="memory-card" style="margin-top: 0;">
+            <h2 class="memory-title">长期记忆（增删改查）</h2>
+            <div class="row">
+              <div class="field">
+                <label for="memoryUserId">userId</label>
+                <input id="memoryUserId" value="demo-user" />
+              </div>
+              <div class="field">
+                <label for="memoryKey">key</label>
+                <select id="memoryKey">
+                  <option value="language">语言偏好</option>
+                  <option value="name">用户称呼</option>
+                  <option value="tone">回答语气</option>
+                  <option value="timezone">时区</option>
+                  <option value="business_preferences">业务偏好</option>
+                </select>
+              </div>
+            </div>
+            <div class="memory-row">
+              <input id="memoryValue" placeholder="记忆值，例如 zh-CN 或 简洁直接" />
+              <input id="memoryTtl" type="number" min="0" placeholder="TTL(秒, 可选)" />
+              <button id="saveMemoryBtn" type="button">保存记忆</button>
+              <button id="loadMemoryBtn" class="ghost" type="button">查询记忆</button>
+            </div>
+            <div id="memoryStatus" class="memory-status"></div>
+            <div class="memory-list">
+              <table class="memory-table">
+                <thead>
+                <tr>
+                  <th>key</th>
+                  <th>value</th>
+                  <th>updatedAt</th>
+                  <th>操作</th>
+                </tr>
+                </thead>
+                <tbody id="memoryTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const menuChatBtn = document.getElementById("menuChatBtn");
+  const menuMemoryBtn = document.getElementById("menuMemoryBtn");
+  const panelChat = document.getElementById("panelChat");
+  const panelMemory = document.getElementById("panelMemory");
+  const sendBtn = document.getElementById("sendBtn");
+  const clearBtn = document.getElementById("clearBtn");
+  const chatBox = document.getElementById("chatBox");
+  const roundStatsEl = document.getElementById("roundStats");
+  const inputEl = document.getElementById("input");
+  const sessionIdEl = document.getElementById("sessionId");
+  const userIdEl = document.getElementById("userId");
+  const memoryUserIdEl = document.getElementById("memoryUserId");
+  const memoryKeyEl = document.getElementById("memoryKey");
+  const memoryValueEl = document.getElementById("memoryValue");
+  const memoryTtlEl = document.getElementById("memoryTtl");
+  const saveMemoryBtn = document.getElementById("saveMemoryBtn");
+  const loadMemoryBtn = document.getElementById("loadMemoryBtn");
+  const memoryStatusEl = document.getElementById("memoryStatus");
+  const memoryTableBodyEl = document.getElementById("memoryTableBody");
+  let roundIndex = 0;
+
+  function appendMessage(role, content) {
+    const wrap = document.createElement("div");
+    wrap.className = "msg " + role;
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = role === "user" ? "你" : "助手";
+    const text = document.createElement("div");
+    text.textContent = content;
+    wrap.appendChild(meta);
+    wrap.appendChild(text);
+    chatBox.appendChild(wrap);
+    chatBox.scrollTop = chatBox.scrollHeight;
+  }
+
+  function appendRoundStat(modelCallCount, modelCallDetails) {
+    roundIndex += 1;
+    const item = document.createElement("div");
+    item.className = "round-item";
+    const head = document.createElement("div");
+    head.className = "round-head";
+    head.textContent = "第 " + roundIndex + " 轮: " + modelCallCount + " 次";
+    item.appendChild(head);
+
+    const details = Array.isArray(modelCallDetails) ? modelCallDetails : [];
+    if (details.length > 0) {
+      const ul = document.createElement("ul");
+      ul.className = "round-detail-list";
+      for (const detail of details) {
+        const li = document.createElement("li");
+        li.textContent = detail;
+        ul.appendChild(li);
+      }
+      item.appendChild(ul);
+    }
+    roundStatsEl.appendChild(item);
+    roundStatsEl.scrollTop = roundStatsEl.scrollHeight;
+  }
+
+  function setMemoryStatus(text, isError) {
+    memoryStatusEl.textContent = text || "";
+    memoryStatusEl.style.color = isError ? "#bf2d2d" : "#6b7a8c";
+  }
+
+  function getCurrentUserId() {
+    const memoryUserId = memoryUserIdEl.value.trim();
+    if (memoryUserId) return memoryUserId;
+    return userIdEl.value.trim();
+  }
+
+  function switchPanel(panel) {
+    const showChat = panel === "chat";
+    panelChat.classList.toggle("active", showChat);
+    panelMemory.classList.toggle("active", !showChat);
+    menuChatBtn.classList.toggle("active", showChat);
+    menuMemoryBtn.classList.toggle("active", !showChat);
+    if (!showChat) {
+      if (!memoryUserIdEl.value.trim() && userIdEl.value.trim()) {
+        memoryUserIdEl.value = userIdEl.value.trim();
+      }
+      loadMemory();
+    }
+  }
+
+  function tryParseValue(rawValue) {
+    if (typeof rawValue !== "string") return String(rawValue ?? "");
+    try {
+      const parsed = JSON.parse(rawValue);
+      if (typeof parsed === "string") return parsed;
+      return JSON.stringify(parsed);
+    } catch (_) {
+      return rawValue;
+    }
+  }
+
+  function renderMemoryRows(items) {
+    memoryTableBodyEl.innerHTML = "";
+    const list = Array.isArray(items) ? items : [];
+    if (list.length === 0) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = '<td colspan="4" style="color:#6b7a8c;">暂无记忆</td>';
+      memoryTableBodyEl.appendChild(tr);
+      return;
+    }
+    for (const item of list) {
+      const tr = document.createElement("tr");
+      const key = item && item.key ? item.key : "";
+      const value = tryParseValue(item && item.value);
+      const updatedAt = item && item.updatedAt ? item.updatedAt : "-";
+
+      const keyTd = document.createElement("td");
+      keyTd.textContent = key;
+      const valueTd = document.createElement("td");
+      valueTd.textContent = value;
+      const timeTd = document.createElement("td");
+      timeTd.textContent = updatedAt;
+      const actionTd = document.createElement("td");
+      const actions = document.createElement("div");
+      actions.className = "memory-actions";
+
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "tiny-btn";
+      editBtn.textContent = "编辑";
+      editBtn.addEventListener("click", function () {
+        memoryKeyEl.value = key;
+        memoryValueEl.value = value;
+        memoryTtlEl.value = "";
+        setMemoryStatus("已载入到表单，可直接点“保存记忆”覆盖更新。", false);
+      });
+
+      const delBtn = document.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "tiny-btn";
+      delBtn.textContent = "删除";
+      delBtn.addEventListener("click", async function () {
+        await deleteMemory(key);
+      });
+
+      actions.appendChild(editBtn);
+      actions.appendChild(delBtn);
+      actionTd.appendChild(actions);
+
+      tr.appendChild(keyTd);
+      tr.appendChild(valueTd);
+      tr.appendChild(timeTd);
+      tr.appendChild(actionTd);
+      memoryTableBodyEl.appendChild(tr);
+    }
+  }
+
+  async function loadMemory() {
+    const userId = getCurrentUserId();
+    if (!userId) {
+      setMemoryStatus("请先填写 userId。", true);
+      return;
+    }
+    loadMemoryBtn.disabled = true;
+    try {
+      const resp = await fetch("/api/agent/memory?userId=" + encodeURIComponent(userId));
+      const data = await resp.json();
+      if (!resp.ok) {
+        setMemoryStatus("查询失败: " + JSON.stringify(data), true);
+        return;
+      }
+      renderMemoryRows(data.items || []);
+      setMemoryStatus("查询成功，共 " + ((data.items || []).length) + " 条。", false);
+    } catch (e) {
+      setMemoryStatus("查询异常: " + (e && e.message ? e.message : String(e)), true);
+    } finally {
+      loadMemoryBtn.disabled = false;
+    }
+  }
+
+  async function saveMemory() {
+    const userId = getCurrentUserId();
+    const key = memoryKeyEl.value.trim();
+    const value = memoryValueEl.value.trim();
+    const ttl = memoryTtlEl.value.trim();
+    if (!userId) {
+      setMemoryStatus("请先填写 userId。", true);
+      return;
+    }
+    if (!key || !value) {
+      setMemoryStatus("key 和 value 都不能为空。", true);
+      return;
+    }
+    saveMemoryBtn.disabled = true;
+    try {
+      const payload = { value: value };
+      if (ttl) payload.ttlSeconds = Number(ttl);
+      const resp = await fetch("/api/agent/memory/" + encodeURIComponent(key) + "?userId=" + encodeURIComponent(userId), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        setMemoryStatus("保存失败: " + JSON.stringify(data), true);
+        return;
+      }
+      setMemoryStatus("保存成功。", false);
+      await loadMemory();
+    } catch (e) {
+      setMemoryStatus("保存异常: " + (e && e.message ? e.message : String(e)), true);
+    } finally {
+      saveMemoryBtn.disabled = false;
+    }
+  }
+
+  async function deleteMemory(key) {
+    const userId = getCurrentUserId();
+    if (!userId || !key) {
+      setMemoryStatus("删除失败：缺少 userId 或 key。", true);
+      return;
+    }
+    try {
+      const resp = await fetch("/api/agent/memory/" + encodeURIComponent(key) + "?userId=" + encodeURIComponent(userId), {
+        method: "DELETE"
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        setMemoryStatus("删除失败: " + JSON.stringify(data), true);
+        return;
+      }
+      setMemoryStatus("删除成功。", false);
+      await loadMemory();
+    } catch (e) {
+      setMemoryStatus("删除异常: " + (e && e.message ? e.message : String(e)), true);
+    }
+  }
+
+  async function sendMessage() {
+    const input = inputEl.value.trim();
+    const sessionId = sessionIdEl.value.trim();
+    const userId = userIdEl.value.trim();
+    if (!input) return;
+    appendMessage("user", input);
+    inputEl.value = "";
+    sendBtn.disabled = true;
+    try {
+      const resp = await fetch("/api/agent/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input, sessionId, userId })
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        appendMessage("assistant", "请求失败: " + JSON.stringify(data));
+        return;
+      }
+      appendMessage("assistant", data.reply || data.error || "空响应");
+      appendRoundStat(Number(data.modelCallCount || 0), data.modelCallDetails || []);
+    } catch (e) {
+      appendMessage("assistant", "请求异常: " + (e && e.message ? e.message : String(e)));
+    } finally {
+      sendBtn.disabled = false;
+      inputEl.focus();
+    }
+  }
+
+  sendBtn.addEventListener("click", sendMessage);
+  inputEl.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+  clearBtn.addEventListener("click", function () {
+    chatBox.innerHTML = "";
+    roundStatsEl.innerHTML = "";
+    roundIndex = 0;
+  });
+  menuChatBtn.addEventListener("click", function () {
+    switchPanel("chat");
+  });
+  menuMemoryBtn.addEventListener("click", function () {
+    switchPanel("memory");
+  });
+  saveMemoryBtn.addEventListener("click", saveMemory);
+  loadMemoryBtn.addEventListener("click", loadMemory);
+  userIdEl.addEventListener("change", function () {
+    if (!memoryUserIdEl.value.trim()) {
+      memoryUserIdEl.value = userIdEl.value.trim();
+    }
+  });
+  memoryUserIdEl.addEventListener("change", loadMemory);
+  memoryUserIdEl.value = userIdEl.value.trim();
+</script>
+</body>
+</html>
