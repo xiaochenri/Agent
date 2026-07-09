@@ -4,9 +4,9 @@ spring:
   application:
     name: stockmind-agent
   datasource:
-    url: jdbc:mysql://101.35.234.55:3306/flower-test?useSSL=false&serverTimezone=UTC&characterEncoding=UTF-8
-    username: root
-    password: Szcs_666_!@#$
+    url:
+    username:
+    password:
   data:
     redis:
       host: localhost
