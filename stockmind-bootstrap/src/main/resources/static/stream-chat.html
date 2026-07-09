@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent 流式对话</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --panel: #ffffff;
+      --text: #17212b;
+      --muted: #6b7a8c;
+      --primary: #0b6bcb;
+      --border: #d9e1ec;
+      --user: #e8f2ff;
+      --assistant: #f2f5f9;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+    .app {
+      max-width: 920px;
+      height: 100vh;
+      margin: 0 auto;
+      padding: 16px;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 12px;
+    }
+    .topbar, .composer {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .topbar {
+      display: grid;
+      grid-template-columns: 1fr 1fr auto;
+      gap: 10px;
+      align-items: end;
+    }
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 5px;
+    }
+    input, textarea, button {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+      padding: 10px 12px;
+      outline: none;
+      font-family: inherit;
+    }
+    input:focus, textarea:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(11, 107, 203, 0.12);
+    }
+    button {
+      width: auto;
+      min-width: 88px;
+      border: none;
+      background: var(--primary);
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.65;
+      cursor: not-allowed;
+    }
+    .ghost {
+      background: #edf3fb;
+      color: #1d4f85;
+      border: 1px solid var(--border);
+    }
+    .chat {
+      min-height: 0;
+      overflow: auto;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .message {
+      max-width: 78%;
+      margin-bottom: 14px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.55;
+    }
+    .message.user {
+      margin-left: auto;
+      background: var(--user);
+    }
+    .message.assistant {
+      margin-right: auto;
+      background: var(--assistant);
+    }
+    .meta {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+    .thinking {
+      color: #48627f;
+      font-size: 13px;
+      border-left: 3px solid #b8cbe2;
+      padding-left: 8px;
+      margin-bottom: 8px;
+    }
+    .thinking:empty {
+      display: none;
+    }
+    .composer {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: end;
+    }
+    textarea {
+      min-height: 54px;
+      max-height: 160px;
+      resize: vertical;
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+    }
+    @media (max-width: 720px) {
+      .app { padding: 10px; }
+      .topbar, .composer { grid-template-columns: 1fr; }
+      .message { max-width: 92%; }
+      button { width: 100%; }
+      .actions { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+<main class="app">
+  <section class="topbar">
+    <div>
+      <label for="sessionId">sessionId</label>
+      <input id="sessionId" value="stream-chat-001" />
+    </div>
+    <div>
+      <label for="userId">userId</label>
+      <input id="userId" value="demo-user" />
+    </div>
+    <button id="clearBtn" class="ghost" type="button">清空</button>
+  </section>
+
+  <section id="chatBox" class="chat" aria-live="polite"></section>
+
+  <section class="composer">
+    <textarea id="input" placeholder="输入问题，按 Enter 发送，Shift + Enter 换行"></textarea>
+    <div class="actions">
+      <button id="sendBtn" type="button">发送</button>
+    </div>
+  </section>
+</main>
+
+<script>
+  const chatBox = document.getElementById("chatBox");
+  const inputEl = document.getElementById("input");
+  const sendBtn = document.getElementById("sendBtn");
+  const clearBtn = document.getElementById("clearBtn");
+  const sessionIdEl = document.getElementById("sessionId");
+  const userIdEl = document.getElementById("userId");
+
+  function scrollToBottom() {
+    chatBox.scrollTop = chatBox.scrollHeight;
+  }
+
+  function appendMessage(role, content) {
+    const wrap = document.createElement("div");
+    wrap.className = "message " + role;
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent = role === "user" ? "你" : "助手";
+    const thinking = document.createElement("div");
+    thinking.className = "thinking";
+    const text = document.createElement("div");
+    text.className = "content";
+    text.textContent = content || "";
+    wrap.appendChild(meta);
+    if (role === "assistant") {
+      wrap.appendChild(thinking);
+    }
+    wrap.appendChild(text);
+    chatBox.appendChild(wrap);
+    scrollToBottom();
+    return { wrap, thinking, text };
+  }
+
+  function setThinking(message, line) {
+    if (!message || !message.thinking) return;
+    message.thinking.textContent = line || "";
+    scrollToBottom();
+  }
+
+  function clearThinking(message) {
+    setThinking(message, "");
+  }
+
+  function setMessageText(message, text) {
+    if (!message || !message.text) return;
+    message.text.textContent = text || "";
+    scrollToBottom();
+  }
+
+  async function readSseStream(resp, handlers) {
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    function dispatchBlock(block) {
+      if (!block.trim()) return;
+      let eventName = "message";
+      const dataLines = [];
+      for (const line of block.split(/\r?\n/)) {
+        if (line.startsWith("event:")) {
+          eventName = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5).trimStart());
+        }
+      }
+      if (dataLines.length === 0) return;
+      const rawData = dataLines.join("\n");
+      let data = rawData;
+      try {
+        data = JSON.parse(rawData);
+      } catch (_) {
+      }
+      if (handlers[eventName]) {
+        handlers[eventName](data);
+      }
+    }
+
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+      buffer += decoder.decode(result.value, { stream: true });
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() || "";
+      for (const block of blocks) {
+        dispatchBlock(block);
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+      dispatchBlock(buffer);
+    }
+  }
+
+  function createTypingController(message) {
+    let text = "";
+    let done = false;
+    let timer = null;
+    const queue = [];
+
+    function tick() {
+      const next = queue.shift();
+      if (next) {
+        text += next;
+        setMessageText(message, text);
+        return;
+      }
+      window.clearInterval(timer);
+      timer = null;
+      if (done) {
+        clearThinking(message);
+      }
+    }
+
+    function schedule() {
+      if (!timer) {
+        timer = window.setInterval(tick, 18);
+      }
+    }
+
+    return {
+      push(delta) {
+        for (const char of Array.from(delta || "")) {
+          queue.push(char);
+        }
+        schedule();
+      },
+      finish(finalText) {
+        done = true;
+        if (!text && queue.length === 0 && finalText) {
+          text = finalText;
+          setMessageText(message, text);
+        }
+        if (!timer && queue.length === 0) {
+          clearThinking(message);
+        }
+      },
+      hasText() {
+        return Boolean(text || queue.length > 0);
+      }
+    };
+  }
+
+  async function sendMessage() {
+    const input = inputEl.value.trim();
+    const sessionId = sessionIdEl.value.trim();
+    const userId = userIdEl.value.trim();
+    if (!input || sendBtn.disabled) return;
+
+    appendMessage("user", input);
+    inputEl.value = "";
+    sendBtn.disabled = true;
+    const assistant = appendMessage("assistant", "");
+    const typing = createTypingController(assistant);
+    setThinking(assistant, "已发送请求，等待 Agent 开始处理");
+
+    try {
+      const resp = await fetch("/api/agent/chat/model-stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input, sessionId, userId })
+      });
+      if (!resp.ok) {
+        setMessageText(assistant, "请求失败: " + await resp.text());
+        clearThinking(assistant);
+        return;
+      }
+      await readSseStream(resp, {
+        process(data) {
+          const message = data && data.message ? data.message : String(data || "");
+          setThinking(assistant, message);
+        },
+        reply_delta(data) {
+          typing.push(data && data.text ? data.text : "");
+        },
+        done(data) {
+          typing.finish(data && data.reply ? data.reply : "");
+        },
+        error(data) {
+          setMessageText(assistant, "请求异常: " + ((data && data.message) || String(data || "")));
+          clearThinking(assistant);
+        }
+      });
+      if (!typing.hasText()) {
+        setMessageText(assistant, "空响应");
+        clearThinking(assistant);
+      }
+    } catch (e) {
+      setMessageText(assistant, "请求异常: " + (e && e.message ? e.message : String(e)));
+      clearThinking(assistant);
+    } finally {
+      sendBtn.disabled = false;
+      inputEl.focus();
+    }
+  }
+
+  sendBtn.addEventListener("click", sendMessage);
+  inputEl.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+  clearBtn.addEventListener("click", function () {
+    chatBox.innerHTML = "";
+  });
+  inputEl.focus();
+</script>
+</body>
+</html>
