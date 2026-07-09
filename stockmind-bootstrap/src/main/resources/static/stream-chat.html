@@ -302,6 +302,13 @@
     }
   }
 
+  function pickReplyText(data) {
+    if (data && data.message && typeof data.message.content === "string" && data.message.content.trim()) {
+      return data.message.content;
+    }
+    return data && data.reply ? data.reply : "";
+  }
+
   async function readSseStream(resp, handlers) {
     const reader = resp.body.getReader();
     const decoder = new TextDecoder("utf-8");
@@ -428,7 +435,7 @@
           typing.push(data && data.text ? data.text : "");
         },
         done(data) {
-          typing.finish(data && data.reply ? data.reply : "");
+          typing.finish(pickReplyText(data));
         },
         error(data) {
           setMessageText(assistant, "请求异常: " + ((data && data.message) || String(data || "")));

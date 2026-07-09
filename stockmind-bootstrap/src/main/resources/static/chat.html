@@ -479,6 +479,13 @@
     }
   }
 
+  function pickReplyText(data) {
+    if (data && data.message && typeof data.message.content === "string" && data.message.content.trim()) {
+      return data.message.content;
+    }
+    return (data && (data.reply || data.error)) || "空响应";
+  }
+
   function appendRoundStat(modelCallCount, modelCallDetails) {
     roundIndex += 1;
     const item = document.createElement("div");
@@ -695,7 +702,7 @@
         appendMessage("assistant", "请求失败: " + JSON.stringify(data));
         return;
       }
-      appendMessage("assistant", data.reply || data.error || "空响应");
+      appendMessage("assistant", pickReplyText(data));
       appendRoundStat(Number(data.modelCallCount || 0), data.modelCallDetails || []);
     } catch (e) {
       appendMessage("assistant", "请求异常: " + (e && e.message ? e.message : String(e)));

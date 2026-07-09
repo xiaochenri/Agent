@@ -135,12 +135,14 @@ public class AgentDemoController {
                 turns.removeFirst();
             }
         }
-        return Map.of(
-                "sessionId", sessionId,
-                "userId", userId,
-                "reply", reply,
-                "modelCallCount", modelCallStats.count(),
-                "modelCallDetails", modelCallStats.details());
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("sessionId", sessionId);
+        response.put("userId", userId);
+        response.put("reply", reply);
+        response.put("modelCallCount", modelCallStats.count());
+        response.put("modelCallDetails", modelCallStats.details());
+        appendAgentResponseFields(response, payload);
+        return response;
     }
 
     @PostMapping(path = "/api/agent/chat/stream", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -311,7 +313,10 @@ public class AgentDemoController {
                 "modelCallCount", modelCallStats.count(),
                 "modelCallDetails", modelCallStats.details()));
         sendTextDeltas(emitter, reply);
-        sendSse(emitter, "done", Map.of("reply", reply));
+        Map<String, Object> donePayload = new LinkedHashMap<>();
+        donePayload.put("reply", reply);
+        appendAgentResponseFields(donePayload, payload);
+        sendSse(emitter, "done", donePayload);
     }
 
     private void handleChatModelStream(
@@ -402,14 +407,44 @@ public class AgentDemoController {
                 "modelCallCount", modelCallStats.count(),
                 "modelCallDetails", modelCallStats.details()));
         sendTextDeltas(sink, reply);
-        emitFluxEvent(sink, "done", Map.of("reply", reply));
+        Map<String, Object> donePayload = new LinkedHashMap<>();
+        donePayload.put("reply", reply);
+        appendAgentResponseFields(donePayload, payload);
+        emitFluxEvent(sink, "done", donePayload);
+    }
+
+    private void appendAgentResponseFields(Map<String, Object> target, Map<String, Object> payload) {
+        if (target == null || payload == null || payload.isEmpty()) {
+            return;
+        }
+        Object messageObj = payload.get("message");
+        if (messageObj instanceof Map<?, ?>) {
+            target.put("message", messageObj);
+        }
+        Object dataObj = payload.get("data");
+        if (dataObj instanceof Map<?, ?>) {
+            target.put("data", dataObj);
+        }
+        Object runtimeObj = payload.get("runtime");
+        if (runtimeObj instanceof Map<?, ?>) {
+            target.put("runtime", runtimeObj);
+        }
+        Object metadataObj = payload.get("metadata");
+        if (metadataObj instanceof Map<?, ?>) {
+            target.put("metadata", metadataObj);
+        }
+        Object statusObj = payload.get("status");
+        if (statusObj != null) {
+            target.put("status", String.valueOf(statusObj));
+        }
+        Object routeObj = payload.get("route");
+        if (routeObj != null) {
+            target.put("route", String.valueOf(routeObj));
+        }
     }
 
     private void emitProcessFromPayload(SseEmitter emitter, Map<String, Object> payload) throws Exception {
-        Object executionLogObj = payload.get("execution_log");
-        if (!(executionLogObj instanceof List<?> logs)) {
-            return;
-        }
+        List<?> logs = extractRuntimeList(payload, "execution_log");
         int index = 0;
         for (Object logObj : logs) {
             if (!(logObj instanceof Map<?, ?> logMap)) {
@@ -491,10 +526,7 @@ public class AgentDemoController {
     }
 
     private Map<String, Object> extractPendingClarification(Map<String, Object> payload) {
-        Object executionLogObj = payload.get("execution_log");
-        if (!(executionLogObj instanceof List<?> logs)) {
-            return Map.of();
-        }
+        List<?> logs = extractRuntimeList(payload, "execution_log");
         for (int i = logs.size() - 1; i >= 0; i--) {
             Object logObj = logs.get(i);
             if (!(logObj instanceof Map<?, ?> logMap)) {
@@ -554,155 +586,23 @@ public class AgentDemoController {
         if (normalizedRaw.isBlank()) {
             return "";
         }
-        Object finalAnswerObj = payload.get("final_answer");
-        if (!(finalAnswerObj instanceof Map<?, ?> finalAnswerMap)) {
-            return normalizedRaw;
+        String messageContent = extractUserMessageContent(payload);
+        if (!messageContent.isBlank()) {
+            return messageContent;
         }
-        List<String> conclusions = sanitizeUserVisibleItems(finalAnswerMap.get("core_conclusions"));
-        List<String> evidence = sanitizeUserVisibleItems(finalAnswerMap.get("key_evidence"));
-        List<String> risks = sanitizeUserVisibleItems(finalAnswerMap.get("risk_points"));
-        List<String> actions = sanitizeUserVisibleItems(finalAnswerMap.get("next_actions"));
-        String formatted = isDirectReply(payload)
-                ? formatDirectReply(conclusions, actions)
-                : formatUserVisibleReply(conclusions, evidence, risks, actions);
-        if (formatted.isBlank()) {
-            return normalizedRaw;
-        }
-        return formatted;
+        return normalizedRaw;
     }
 
-    private boolean isDirectReply(Map<String, Object> payload) {
-        Object executionLogObj = payload.get("execution_log");
-        if (!(executionLogObj instanceof List<?> logs)) {
-            return false;
-        }
-        for (Object logObj : logs) {
-            if (!(logObj instanceof Map<?, ?> logMap)) {
-                continue;
-            }
-            String step = normalize(logMap.get("step") == null ? null : logMap.get("step").toString(), "");
-            String toolName = normalize(logMap.get("tool_name") == null ? null : logMap.get("tool_name").toString(), "");
-            if ("direct_reply".equals(step) || "direct_reply_module".equals(toolName)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private List<String> sanitizeUserVisibleItems(Object value) {
-        LinkedHashSet<String> lines = new LinkedHashSet<>();
-        if (value instanceof List<?> list) {
-            for (Object item : list) {
-                addUserVisibleItem(lines, item);
-            }
-            return new ArrayList<>(lines);
-        }
-        addUserVisibleItem(lines, value);
-        return new ArrayList<>(lines);
-    }
-
-    private void addUserVisibleItem(LinkedHashSet<String> lines, Object value) {
-        String text = sanitizeUserVisibleText(value);
-        if (!text.isEmpty()) {
-            lines.add(text);
-        }
-    }
-
-    private String sanitizeUserVisibleText(Object value) {
-        if (value == null) {
+    private String extractUserMessageContent(Map<String, Object> payload) {
+        Object messageObj = payload.get("message");
+        if (!(messageObj instanceof Map<?, ?> messageMap)) {
             return "";
         }
-        String text = String.valueOf(value).trim();
-        if (text.isBlank() || isInternalAgentText(text)) {
+        Object contentObj = messageMap.get("content");
+        if (contentObj == null) {
             return "";
         }
-        return text
-                .replace("已识别信息：", "已知信息：")
-                .replace("缺失信息：", "还需要补充：")
-                .replace("缺少", "需要补充")
-                .replace("分析维度缺失", "需要补充分析维度")
-                .replace("无法调用任何业务工具", "暂时不能开始分析")
-                .replace("继续执行将产生错误结果", "继续分析可能不准确")
-                .replace("执行偏差", "分析偏差")
-                .trim();
-    }
-
-    private boolean isInternalAgentText(String text) {
-        String normalized = text == null ? "" : text.trim();
-        if (normalized.isBlank()) {
-            return true;
-        }
-        List<String> internalMarkers = List.of(
-                "P0",
-                "P1",
-                "P2",
-                "tool_calls",
-                "工具链",
-                "无需调用工具",
-                "无需进入工具",
-                "属于寒暄",
-                "路由",
-                "当前任务为",
-                "决策：",
-                "validation",
-                "retryable",
-                "blocked_reason",
-                "risk_flags");
-        for (String marker : internalMarkers) {
-            if (normalized.contains(marker)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private String formatUserVisibleReply(
-            List<String> conclusions, List<String> evidence, List<String> risks, List<String> actions) {
-        StringBuilder sb = new StringBuilder();
-        appendParagraphs(sb, conclusions);
-        appendSection(sb, "已知信息", evidence);
-        appendSection(sb, "需要注意", risks);
-        appendSection(sb, "下一步", actions);
-        return sb.toString().trim();
-    }
-
-    private String formatDirectReply(List<String> conclusions, List<String> actions) {
-        StringBuilder sb = new StringBuilder();
-        appendParagraphs(sb, conclusions);
-        List<String> usefulActions = actions.stream()
-                .filter(item -> item != null && !item.isBlank())
-                .filter(item -> !item.contains("如需我执行任务"))
-                .toList();
-        appendSection(sb, "你可以这样问", usefulActions);
-        return sb.toString().trim();
-    }
-
-    private void appendParagraphs(StringBuilder sb, List<String> items) {
-        for (String item : items) {
-            if (item == null || item.isBlank()) {
-                continue;
-            }
-            if (!sb.isEmpty()) {
-                sb.append("\n\n");
-            }
-            sb.append(item.trim());
-        }
-    }
-
-    private void appendSection(StringBuilder sb, String title, List<String> items) {
-        if (items == null || items.isEmpty()) {
-            return;
-        }
-        if (!sb.isEmpty()) {
-            sb.append("\n\n");
-        }
-        sb.append("### ").append(title).append("\n");
-        for (String item : items) {
-            if (item == null || item.isBlank()) {
-                continue;
-            }
-            sb.append("- ").append(item.trim()).append("\n");
-        }
+        return normalize(String.valueOf(contentObj), "");
     }
 
     private Map<String, Object> parsePayload(String rawReply) {
@@ -719,10 +619,7 @@ public class AgentDemoController {
     }
 
     private ModelCallStats extractModelCallStats(Map<String, Object> payload) {
-        Object executionLogObj = payload.get("execution_log");
-        if (!(executionLogObj instanceof List<?> logs)) {
-            return new ModelCallStats(0, List.of());
-        }
+        List<?> logs = extractRuntimeList(payload, "execution_log");
         List<String> details = new ArrayList<>();
         for (Object logObj : logs) {
             if (!(logObj instanceof Map<?, ?> logMap)) {
@@ -777,10 +674,26 @@ public class AgentDemoController {
         if (!calledTools.isEmpty()) {
             return "决定调用业务工具执行步骤";
         }
-        if (outputObj instanceof Map<?, ?> outputMap && outputMap.get("final_answer") != null) {
-            return "生成最终结论";
-        }
         return "通用推理";
+    }
+
+    private List<?> extractRuntimeList(Map<String, Object> payload, String fieldName) {
+        Object value = extractRuntimeValue(payload, fieldName);
+        if (value instanceof List<?> list) {
+            return list;
+        }
+        return List.of();
+    }
+
+    private Object extractRuntimeValue(Map<String, Object> payload, String fieldName) {
+        if (payload == null || payload.isEmpty()) {
+            return null;
+        }
+        Object runtimeObj = payload.get("runtime");
+        if (!(runtimeObj instanceof Map<?, ?> runtimeMap)) {
+            return null;
+        }
+        return runtimeMap.get(fieldName);
     }
 
     private Optional<CachedReply> findCachedReply(String sessionId, String userId, String input) {
