@@ -113,6 +113,161 @@ public class StockAgentTools {
     }
 
     @AgentTool(
+            name = "stock_snapshot_analysis",
+            title = "股票快照总结分析",
+            description = "用途：基于已获得的行情、新闻或知识库信息，生成简要总结、风险提示、数据局限和下一步建议。"
+                    + " 仅当用户明确要求“分析、总结、解读、怎么看、走势判断、风险提示、整体表现、简报”等总结性输出时使用。"
+                    + " 不要在用户仅查询具体字段时使用本工具，例如：最新股价、涨跌幅、成交量、市值、市盈率、历史价格、公司资料等。"
+                    + " 调用前必须确认用户请求包含明确分析意图；若只是原始数据查询，应只使用对应事实工具。"
+                    + " 本工具不拉取新数据，只汇总调用方提供的已知数据；必须说明数据来源和局限，禁止直接给出买入/卖出建议。",
+            namespace = "finance.analysis",
+            category = "stock_analysis",
+            tags = {"stock", "analysis", "summary", "readonly"},
+            toolType = ToolType.BUSINESS,
+            visibility = ToolVisibility.MODEL_VISIBLE,
+            dangerLevel = ToolDangerLevel.SAFE,
+            readOnly = true,
+            idempotent = true,
+            requiresConfirmation = false,
+            allowedDirectCall = true,
+            allowedInPlanStep = true,
+            timeoutMs = 5000,
+            inputSchema = """
+                    {
+                      "type": "object",
+                      "properties": {
+                        "symbol": {"type": "string", "description": "股票代码，例如 AAPL、TSLA、600519。"},
+                        "name": {"type": "string", "description": "股票或公司名称，可选。"},
+                        "price": {"type": "number", "description": "最新价格，可来自 market_quote。"},
+                        "change_pct": {"type": "number", "description": "涨跌幅百分比，可来自 market_quote。"},
+                        "volume": {"type": "integer", "description": "成交量，可来自 market_quote。"},
+                        "as_of": {"type": "string", "description": "数据日期或时间。"},
+                        "market_context": {"type": "string", "description": "可选的行情补充背景，例如历史走势、资金流或行业背景。"},
+                        "news_context": {"type": "string", "description": "可选的新闻摘要或检索结果要点。"},
+                        "knowledge_context": {"type": "string", "description": "可选的财报、公告或知识库证据要点。"}
+                      },
+                      "required": ["symbol"]
+                    }
+                    """,
+            outputSchema = """
+                    {
+                      "type": "object",
+                      "properties": {
+                        "tool": {"type": "string"},
+                        "status": {"type": "string", "enum": ["success", "failed"]},
+                        "validation_passed": {"type": "boolean"},
+                        "validation_rules": {"type": "array", "items": {"type": "string"}},
+                        "validation_errors": {"type": "array", "items": {"type": "string"}},
+                        "retryable": {"type": "boolean"},
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "symbol": {"type": "string"},
+                            "name": {"type": "string"},
+                            "as_of": {"type": "string"},
+                            "summary": {"type": "string"},
+                            "known_info": {"type": "array", "items": {"type": "string"}},
+                            "attention_points": {"type": "array", "items": {"type": "string"}},
+                            "known_limits": {"type": "array", "items": {"type": "string"}},
+                            "next_steps": {"type": "array", "items": {"type": "string"}}
+                          },
+                          "required": ["symbol", "summary", "known_info", "attention_points", "known_limits", "next_steps"]
+                        }
+                      },
+                      "required": ["tool", "status", "validation_passed", "data"]
+                    }
+                    """)
+    public String stockSnapshotAnalysis(Map<String, Object> input, String rawInput) {
+        String symbol = firstNonBlank((String) input.get("symbol"), extractSymbolFromInput(rawInput));
+        if (symbol.isBlank()) {
+            return fail("stock_snapshot_analysis", "symbol 不能为空", true);
+        }
+        String normalizedSymbol = symbol.trim().toUpperCase();
+        String name = firstNonBlank((String) input.get("name"), "");
+        String asOf = firstNonBlank((String) input.get("as_of"), LocalDate.now().toString());
+        Double price = parseDouble(input.get("price"));
+        Double changePct = parseDouble(input.get("change_pct"));
+        Long volume = parseLong(input.get("volume"));
+        String marketContext = firstNonBlank((String) input.get("market_context"), "");
+        String newsContext = firstNonBlank((String) input.get("news_context"), "");
+        String knowledgeContext = firstNonBlank((String) input.get("knowledge_context"), "");
+
+        List<String> knownInfo = new ArrayList<>();
+        knownInfo.add("分析对象：" + (name.isBlank() ? normalizedSymbol : name + "（" + normalizedSymbol + "）"));
+        if (price != null) {
+            knownInfo.add("最新价格：" + round2(price));
+        }
+        if (changePct != null) {
+            knownInfo.add("涨跌幅：" + round2(changePct) + "%");
+        }
+        if (volume != null) {
+            knownInfo.add("成交量：" + volume);
+        }
+        knownInfo.add("数据时间：" + asOf);
+        if (!marketContext.isBlank()) {
+            knownInfo.add("行情背景：" + truncate(marketContext, 180));
+        }
+        if (!newsContext.isBlank()) {
+            knownInfo.add("新闻要点：" + truncate(newsContext, 180));
+        }
+        if (!knowledgeContext.isBlank()) {
+            knownInfo.add("知识库要点：" + truncate(knowledgeContext, 180));
+        }
+
+        List<String> attentionPoints = new ArrayList<>();
+        String summary = buildSnapshotSummary(name, normalizedSymbol, price, changePct, volume, asOf);
+        if (changePct != null) {
+            double absChange = Math.abs(changePct);
+            if (absChange >= 5) {
+                attentionPoints.add("单日波动较大，需关注短期情绪和事件驱动风险。");
+            } else if (absChange >= 2) {
+                attentionPoints.add("单日波动有一定幅度，建议结合近几日走势判断是否延续。");
+            } else {
+                attentionPoints.add("单日波动相对温和，单独行情数据不足以判断趋势变化。");
+            }
+            if (changePct < 0) {
+                attentionPoints.add("股价当日下跌，需观察是否伴随成交量放大或负面信息。");
+            } else if (changePct > 0) {
+                attentionPoints.add("股价当日上涨，需观察上涨是否有成交量和基本面信息支撑。");
+            }
+        } else {
+            attentionPoints.add("未提供涨跌幅，无法判断当日价格方向和波动强度。");
+        }
+        if (volume == null) {
+            attentionPoints.add("未提供成交量，暂无法判断交易活跃度。");
+        }
+
+        List<String> knownLimits = new ArrayList<>();
+        knownLimits.add("本工具只基于调用方提供的数据做归纳，不会主动检索或补全新数据。");
+        if (marketContext.isBlank()) {
+            knownLimits.add("缺少历史走势、均线、量能对比等行情背景，趋势判断有限。");
+        }
+        if (newsContext.isBlank()) {
+            knownLimits.add("缺少新闻、公告或事件信息，无法解释价格波动原因。");
+        }
+        if (knowledgeContext.isBlank()) {
+            knownLimits.add("缺少财报、经营指标或估值信息，无法形成基本面判断。");
+        }
+
+        List<String> nextSteps = new ArrayList<>();
+        nextSteps.add("补充近5日、20日或更长周期走势，判断短期波动是否延续。");
+        nextSteps.add("检索相关新闻、公告或财报证据，确认价格变化是否有事件或基本面支撑。");
+        nextSteps.add("如需更完整结论，可结合行业表现、估值指标和成交量对比继续分析。");
+
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("symbol", normalizedSymbol);
+        data.put("name", name);
+        data.put("as_of", asOf);
+        data.put("summary", summary);
+        data.put("known_info", knownInfo);
+        data.put("attention_points", attentionPoints);
+        data.put("known_limits", knownLimits);
+        data.put("next_steps", nextSteps);
+        return success("stock_snapshot_analysis", toJson(data),
+                "[\"symbol 非空\",\"仅基于已提供数据总结\",\"包含 summary/known_info/attention_points/known_limits/next_steps\",\"不包含直接买入或卖出建议\"]");
+    }
+
+    @AgentTool(
             name = "news_search",
             title = "新闻检索",
             description = "用途：按关键词检索相关新闻。"
@@ -278,6 +433,66 @@ public class StockAgentTools {
             }
         }
         return defaultValue;
+    }
+
+    private Double parseDouble(Object value) {
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        if (value instanceof String text && !text.isBlank()) {
+            try {
+                return Double.parseDouble(text.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private Long parseLong(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String text && !text.isBlank()) {
+            try {
+                return Long.parseLong(text.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private String buildSnapshotSummary(
+            String name,
+            String symbol,
+            Double price,
+            Double changePct,
+            Long volume,
+            String asOf) {
+        String target = name.isBlank() ? symbol : name + "（" + symbol + "）";
+        StringBuilder summary = new StringBuilder("基于已提供数据，").append(target);
+        summary.append("截至").append(asOf);
+        if (price != null) {
+            summary.append("最新价格为").append(round2(price));
+        } else {
+            summary.append("暂无最新价格");
+        }
+        if (changePct != null) {
+            summary.append("，涨跌幅为").append(round2(changePct)).append("%");
+            if (changePct < 0) {
+                summary.append("，短期价格表现偏弱");
+            } else if (changePct > 0) {
+                summary.append("，短期价格表现偏强");
+            } else {
+                summary.append("，价格基本持平");
+            }
+        }
+        if (volume != null) {
+            summary.append("，成交量为").append(volume);
+        }
+        summary.append("。该结论仅反映当前输入数据，不构成投资建议。");
+        return summary.toString();
     }
 
     private String extractSymbolFromInput(String text) {

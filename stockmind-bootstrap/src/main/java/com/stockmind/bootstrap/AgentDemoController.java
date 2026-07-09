@@ -19,7 +19,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
@@ -559,36 +558,150 @@ public class AgentDemoController {
         if (!(finalAnswerObj instanceof Map<?, ?> finalAnswerMap)) {
             return normalizedRaw;
         }
-        LinkedHashSet<String> lines = new LinkedHashSet<>();
-        appendValues(lines, finalAnswerMap.get("core_conclusions"));
-        appendValues(lines, finalAnswerMap.get("key_evidence"));
-        appendValues(lines, finalAnswerMap.get("risk_points"));
-        appendValues(lines, finalAnswerMap.get("next_actions"));
-        if (lines.isEmpty()) {
+        List<String> conclusions = sanitizeUserVisibleItems(finalAnswerMap.get("core_conclusions"));
+        List<String> evidence = sanitizeUserVisibleItems(finalAnswerMap.get("key_evidence"));
+        List<String> risks = sanitizeUserVisibleItems(finalAnswerMap.get("risk_points"));
+        List<String> actions = sanitizeUserVisibleItems(finalAnswerMap.get("next_actions"));
+        String formatted = isDirectReply(payload)
+                ? formatDirectReply(conclusions, actions)
+                : formatUserVisibleReply(conclusions, evidence, risks, actions);
+        if (formatted.isBlank()) {
             return normalizedRaw;
         }
-        return lines.stream().collect(Collectors.joining("\n"));
+        return formatted;
     }
 
-    private void appendValues(LinkedHashSet<String> lines, Object value) {
+    private boolean isDirectReply(Map<String, Object> payload) {
+        Object executionLogObj = payload.get("execution_log");
+        if (!(executionLogObj instanceof List<?> logs)) {
+            return false;
+        }
+        for (Object logObj : logs) {
+            if (!(logObj instanceof Map<?, ?> logMap)) {
+                continue;
+            }
+            String step = normalize(logMap.get("step") == null ? null : logMap.get("step").toString(), "");
+            String toolName = normalize(logMap.get("tool_name") == null ? null : logMap.get("tool_name").toString(), "");
+            if ("direct_reply".equals(step) || "direct_reply_module".equals(toolName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<String> sanitizeUserVisibleItems(Object value) {
+        LinkedHashSet<String> lines = new LinkedHashSet<>();
         if (value instanceof List<?> list) {
             for (Object item : list) {
-                if (item == null) {
-                    continue;
-                }
-                String text = item.toString().trim();
-                if (!text.isEmpty()) {
-                    lines.add(text);
-                }
+                addUserVisibleItem(lines, item);
             }
-            return;
+            return new ArrayList<>(lines);
         }
-        if (value == null) {
-            return;
-        }
-        String text = value.toString().trim();
+        addUserVisibleItem(lines, value);
+        return new ArrayList<>(lines);
+    }
+
+    private void addUserVisibleItem(LinkedHashSet<String> lines, Object value) {
+        String text = sanitizeUserVisibleText(value);
         if (!text.isEmpty()) {
             lines.add(text);
+        }
+    }
+
+    private String sanitizeUserVisibleText(Object value) {
+        if (value == null) {
+            return "";
+        }
+        String text = String.valueOf(value).trim();
+        if (text.isBlank() || isInternalAgentText(text)) {
+            return "";
+        }
+        return text
+                .replace("已识别信息：", "已知信息：")
+                .replace("缺失信息：", "还需要补充：")
+                .replace("缺少", "需要补充")
+                .replace("分析维度缺失", "需要补充分析维度")
+                .replace("无法调用任何业务工具", "暂时不能开始分析")
+                .replace("继续执行将产生错误结果", "继续分析可能不准确")
+                .replace("执行偏差", "分析偏差")
+                .trim();
+    }
+
+    private boolean isInternalAgentText(String text) {
+        String normalized = text == null ? "" : text.trim();
+        if (normalized.isBlank()) {
+            return true;
+        }
+        List<String> internalMarkers = List.of(
+                "P0",
+                "P1",
+                "P2",
+                "tool_calls",
+                "工具链",
+                "无需调用工具",
+                "无需进入工具",
+                "属于寒暄",
+                "路由",
+                "当前任务为",
+                "决策：",
+                "validation",
+                "retryable",
+                "blocked_reason",
+                "risk_flags");
+        for (String marker : internalMarkers) {
+            if (normalized.contains(marker)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String formatUserVisibleReply(
+            List<String> conclusions, List<String> evidence, List<String> risks, List<String> actions) {
+        StringBuilder sb = new StringBuilder();
+        appendParagraphs(sb, conclusions);
+        appendSection(sb, "已知信息", evidence);
+        appendSection(sb, "需要注意", risks);
+        appendSection(sb, "下一步", actions);
+        return sb.toString().trim();
+    }
+
+    private String formatDirectReply(List<String> conclusions, List<String> actions) {
+        StringBuilder sb = new StringBuilder();
+        appendParagraphs(sb, conclusions);
+        List<String> usefulActions = actions.stream()
+                .filter(item -> item != null && !item.isBlank())
+                .filter(item -> !item.contains("如需我执行任务"))
+                .toList();
+        appendSection(sb, "你可以这样问", usefulActions);
+        return sb.toString().trim();
+    }
+
+    private void appendParagraphs(StringBuilder sb, List<String> items) {
+        for (String item : items) {
+            if (item == null || item.isBlank()) {
+                continue;
+            }
+            if (!sb.isEmpty()) {
+                sb.append("\n\n");
+            }
+            sb.append(item.trim());
+        }
+    }
+
+    private void appendSection(StringBuilder sb, String title, List<String> items) {
+        if (items == null || items.isEmpty()) {
+            return;
+        }
+        if (!sb.isEmpty()) {
+            sb.append("\n\n");
+        }
+        sb.append("### ").append(title).append("\n");
+        for (String item : items) {
+            if (item == null || item.isBlank()) {
+                continue;
+            }
+            sb.append("- ").append(item.trim()).append("\n");
         }
     }
 

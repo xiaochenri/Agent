@@ -187,11 +187,33 @@
       margin-bottom: 14px;
       padding: 10px 12px;
       border-radius: 10px;
-      white-space: pre-wrap;
       word-break: break-word;
+    }
+    .content {
+      line-height: 1.65;
+    }
+    .content p {
+      margin: 0 0 10px;
+    }
+    .content p:last-child {
+      margin-bottom: 0;
+    }
+    .content h3 {
+      margin: 14px 0 8px;
+      font-size: 15px;
+      line-height: 1.35;
+      color: #23384f;
+    }
+    .content ul {
+      margin: 0 0 10px;
+      padding-left: 20px;
+    }
+    .content li {
+      margin-bottom: 5px;
     }
     .user { background: #eaf3ff; }
     .assistant { background: #f3f6fb; }
+    .user .content { white-space: pre-wrap; }
     .meta {
       display: block;
       color: var(--muted);
@@ -387,11 +409,74 @@
     meta.className = "meta";
     meta.textContent = role === "user" ? "你" : "助手";
     const text = document.createElement("div");
-    text.textContent = content;
+    text.className = "content";
+    renderMessageContent(text, content, role === "assistant");
     wrap.appendChild(meta);
     wrap.appendChild(text);
     chatBox.appendChild(wrap);
     chatBox.scrollTop = chatBox.scrollHeight;
+  }
+
+  function renderMessageContent(container, content, rich) {
+    container.innerHTML = "";
+    const text = content || "";
+    if (!rich) {
+      container.textContent = text;
+      return;
+    }
+    const lines = text.split(/\r?\n/);
+    let paragraph = [];
+    let list = null;
+
+    function flushParagraph() {
+      if (paragraph.length === 0) return;
+      const p = document.createElement("p");
+      p.textContent = paragraph.join(" ");
+      container.appendChild(p);
+      paragraph = [];
+    }
+
+    function ensureList() {
+      if (!list) {
+        flushParagraph();
+        list = document.createElement("ul");
+        container.appendChild(list);
+      }
+      return list;
+    }
+
+    function closeList() {
+      list = null;
+    }
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) {
+        flushParagraph();
+        closeList();
+        continue;
+      }
+      if (line.startsWith("### ")) {
+        flushParagraph();
+        closeList();
+        const h = document.createElement("h3");
+        h.textContent = line.slice(4).trim();
+        container.appendChild(h);
+        continue;
+      }
+      if (line.startsWith("- ")) {
+        const li = document.createElement("li");
+        li.textContent = line.slice(2).trim();
+        ensureList().appendChild(li);
+        continue;
+      }
+      closeList();
+      paragraph.push(line);
+    }
+    flushParagraph();
+    if (!container.hasChildNodes()) {
+      container.textContent = text;
+    }
   }
 
   function appendRoundStat(modelCallCount, modelCallDetails) {

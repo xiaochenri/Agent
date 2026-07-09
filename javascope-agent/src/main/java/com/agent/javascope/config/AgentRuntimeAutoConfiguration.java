@@ -5,6 +5,7 @@ import com.agent.javascope.prompt.DefaultAgentPromptProvider;
 import com.agent.javascope.prompt.LayeredAgentPromptProvider;
 import com.agent.javascope.tools.ReflectiveAgentToolExecutor;
 import com.agent.javascope.chat.AgentChatModelClient;
+import com.agent.javascope.chat.OpenAiCompatibleAgentChatModelClient;
 import com.agent.javascope.prompt.AgentPromptProvider;
 import com.agent.javascope.tools.AgentToolExecutor;
 import com.agent.javascope.tools.ClarificationBusinessProvider;
@@ -39,6 +40,14 @@ public class AgentRuntimeAutoConfiguration {
     @ConditionalOnMissingBean
     public AgentToolExecutor agentToolExecutor() {
         return new ReflectiveAgentToolExecutor(applicationContext);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public AgentChatModelClient agentChatModelClient(
+            AgentRuntimeProperties properties,
+            AgentJsonCodecUtil json) {
+        return new OpenAiCompatibleAgentChatModelClient(properties, json);
     }
 
     @Bean

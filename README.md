@@ -68,6 +68,7 @@
 在 Spring Bean 方法上使用 `@AgentTool` 即可注册为模型可调用工具。当前股票工具：
 
 - `market_quote`: 根据 `symbol` 返回 mock 行情
+- `stock_snapshot_analysis`: 仅在用户明确要求分析/总结/解读时，基于已知行情、新闻或知识库信息生成简要总结、风险提示、数据局限和下一步建议
 - `news_search`: 按关键词检索新闻，当前为失败占位实现
 - `knowledge_search`: 从 OceanBase 向量知识库检索财报/年报/季报证据片段
 
