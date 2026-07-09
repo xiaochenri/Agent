@@ -12,6 +12,7 @@ public class AgentRuntimeProperties {
     private String systemInstruction = "你是通用任务执行器，输出必须为 JSON。";
     private int maxRounds = 10;
     private int planMaxRetry = 2;
+    private boolean finalAnswerValidationEnabled = false;
     private double temperature = 0.2;
     private int timeoutSeconds = 60;
 
@@ -69,6 +70,14 @@ public class AgentRuntimeProperties {
 
     public void setPlanMaxRetry(int planMaxRetry) {
         this.planMaxRetry = planMaxRetry;
+    }
+
+    public boolean isFinalAnswerValidationEnabled() {
+        return finalAnswerValidationEnabled;
+    }
+
+    public void setFinalAnswerValidationEnabled(boolean finalAnswerValidationEnabled) {
+        this.finalAnswerValidationEnabled = finalAnswerValidationEnabled;
     }
 
     public double getTemperature() {

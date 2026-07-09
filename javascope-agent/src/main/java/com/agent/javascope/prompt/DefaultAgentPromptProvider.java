@@ -81,9 +81,9 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                 - 先做意图判定：非任务型请求（身份问答、能力介绍、闲聊问候）禁止进入工具链，直接自然回答
                 - 任务型请求（analysis/recommendation/query_with_constraints/execution_request）才允许进入工具链
                 - 若可用工具中包含 clarify_requirement，按信息缺口分级：P0（对象缺失/不可逆动作对象缺失）必须澄清；P1（存在歧义）可先按默认执行并轻量确认；P2（风格偏好）直接执行
-                - 分析维度缺失但可采用默认维度（如价格波动/事件催化/风险提示）时，不要调用 clarify_requirement，直接进入执行
+                - 分析维度缺失但可采用业务默认维度时，不要调用 clarify_requirement，直接进入执行
                 - 调用 clarify_requirement 成功后，下一轮必须停止工具调用并仅输出 final_answer（tool_calls=[]）
-                - 澄清阶段 final_answer 建议模板：先“收到，你要分析『标的』在『时间范围』内的风险”，再给“我已识别/还缺关键信息/可选关注维度/最短输入示例”
+                - 澄清阶段 final_answer 建议模板：先说明已理解的任务对象与目标，再给“我已识别/还缺关键信息/可选关注维度/最短输入示例”
                 - 澄清阶段 final_answer 映射：core_conclusions=模板主结论与已识别项；key_evidence=已识别信息+缺失信息；risk_points=继续执行风险；next_actions=明确下一步操作（补充缺失字段+最短回复示例+可选维度建议）
                 - 收紧约束：当任务无需澄清时，尽可能先调用 create_plan，再按计划执行；仅在你能确认单步即可完成且证据充分时，才允许不先规划
                 - 只有“单步即可完成且证据已充分且无需额外检索/规划”三者同时满足时，才允许不调用规划类工具直接输出 final_answer
@@ -262,6 +262,7 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                 + " 目标=MVI最小可执行信息量；禁止开放式提问；单次只问一轮；优先使用历史记忆。"
                 + " 若 action=ask（P0）时，话术必须三段："
                 + " 第一段=已理解内容；第二段=【选项A/B/C】结构化候选；第三段=推荐默认项与低负担引导。"
+                + " 若 action=confirm_before_action（P0）时，必须暂停执行并要求用户明确确认/取消/修改；"
                 + " 若 action=execute_with_guess（P1）时，必须说明默认假设并提示可调整；"
                 + " 若 action=direct_execute（P2）时，明确采用默认偏好直接执行。"
                 + " final_answer 映射要求："

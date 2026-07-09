@@ -17,9 +17,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -30,6 +33,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Sinks;
 
 @RestController
 public class AgentDemoController {
@@ -42,6 +47,7 @@ public class AgentDemoController {
     private final UserMemoryService userMemoryService;
     private final ConcurrentMap<String, Deque<ChatTurn>> sessionTurns = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, CachedReply> userRequestCache = new ConcurrentHashMap<>();
+    private final ExecutorService streamExecutor = Executors.newCachedThreadPool();
 
     public AgentDemoController(ReActAgent reActAgent, UserMemoryService userMemoryService) {
         this.reActAgent = reActAgent;
@@ -90,7 +96,7 @@ public class AgentDemoController {
                     "error", "input 不能为空");
         }
 
-        Optional<CachedReply> cachedReply = findCachedReply(userId, input);
+        Optional<CachedReply> cachedReply = findCachedReply(sessionId, userId, input);
         if (cachedReply.isPresent()) {
             return Map.of(
                     "sessionId", sessionId,
@@ -102,7 +108,7 @@ public class AgentDemoController {
 
         Optional<String> memoryWriteReply = userMemoryService.tryWriteByInputCommand(userId, input);
         if (memoryWriteReply.isPresent()) {
-            cacheReply(userId, input, memoryWriteReply.get());
+            cacheReply(sessionId, userId, input, memoryWriteReply.get());
             return Map.of(
                     "sessionId", sessionId,
                     "userId", userId,
@@ -122,10 +128,10 @@ public class AgentDemoController {
         Map<String, Object> payload = parsePayload(rawReply);
         String reply = extractConclusionText(payload, rawReply);
         ModelCallStats modelCallStats = extractModelCallStats(payload);
-        cacheReply(userId, input, reply);
+        cacheReply(sessionId, userId, input, reply);
 
         synchronized (turns) {
-            turns.addLast(new ChatTurn(input, reply));
+            turns.addLast(new ChatTurn(input, reply, payload));
             while (turns.size() > MAX_TURNS_PER_SESSION) {
                 turns.removeFirst();
             }
@@ -136,6 +142,39 @@ public class AgentDemoController {
                 "reply", reply,
                 "modelCallCount", modelCallStats.count(),
                 "modelCallDetails", modelCallStats.details());
+    }
+
+    @PostMapping(path = "/api/agent/chat/stream", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter chatStream(@RequestBody ChatRequest request) {
+        SseEmitter emitter = new SseEmitter(0L);
+        streamExecutor.execute(() -> {
+            try {
+                handleChatStream(request, emitter);
+                emitter.complete();
+            } catch (Exception e) {
+                try {
+                    sendSse(emitter, "error", Map.of("message", normalize(e.getMessage(), "流式请求失败")));
+                } catch (Exception ignored) {
+                }
+                emitter.completeWithError(e);
+            }
+        });
+        return emitter;
+    }
+
+    @PostMapping(path = "/api/agent/chat/model-stream", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<Map<String, Object>>> chatModelStream(@RequestBody ChatRequest request) {
+        Sinks.Many<ServerSentEvent<Map<String, Object>>> sink = Sinks.many().unicast().onBackpressureBuffer();
+        streamExecutor.execute(() -> {
+            try {
+                handleChatModelStream(request, sink);
+                sink.tryEmitComplete();
+            } catch (Exception e) {
+                emitFluxEvent(sink, "error", Map.of("message", normalize(e.getMessage(), "模型流式请求失败")));
+                sink.tryEmitComplete();
+            }
+        });
+        return sink.asFlux();
     }
 
     @GetMapping(path = "/api/agent/memory", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -192,8 +231,319 @@ public class AgentDemoController {
             sb.append("第").append(i + 1).append("轮用户: ").append(turn.userInput()).append("\n");
             sb.append("第").append(i + 1).append("轮助手: ").append(turn.assistantReply()).append("\n");
         }
+        appendPendingClarificationContext(sb, history);
         sb.append("本轮用户: ").append(input);
         return sb.toString();
+    }
+
+    private void handleChatStream(ChatRequest request, SseEmitter emitter) throws Exception {
+        String sessionId = normalize(request.sessionId(), "chat-session");
+        String userId = normalize(request.userId(), "chat-user");
+        String input = normalize(request.input(), "");
+        if (input.isBlank()) {
+            sendSse(emitter, "meta", Map.of(
+                    "sessionId", sessionId,
+                    "userId", userId,
+                    "modelCallCount", 0,
+                    "modelCallDetails", List.of()));
+            sendTextDeltas(emitter, "input 不能为空");
+            sendSse(emitter, "done", Map.of("reply", "input 不能为空"));
+            return;
+        }
+
+        Optional<CachedReply> cachedReply = findCachedReply(sessionId, userId, input);
+        if (cachedReply.isPresent()) {
+            List<String> details = List.of("命中重复请求缓存，复用最近一次回复");
+            sendSse(emitter, "process", Map.of("message", details.get(0)));
+            sendSse(emitter, "meta", Map.of(
+                    "sessionId", sessionId,
+                    "userId", userId,
+                    "modelCallCount", 0,
+                    "modelCallDetails", details));
+            sendTextDeltas(emitter, cachedReply.get().reply());
+            sendSse(emitter, "done", Map.of("reply", cachedReply.get().reply()));
+            return;
+        }
+
+        Optional<String> memoryWriteReply = userMemoryService.tryWriteByInputCommand(userId, input);
+        if (memoryWriteReply.isPresent()) {
+            cacheReply(sessionId, userId, input, memoryWriteReply.get());
+            sendSse(emitter, "process", Map.of("message", "已识别为记忆写入指令"));
+            sendSse(emitter, "meta", Map.of(
+                    "sessionId", sessionId,
+                    "userId", userId,
+                    "modelCallCount", 0,
+                    "modelCallDetails", List.of()));
+            sendTextDeltas(emitter, memoryWriteReply.get());
+            sendSse(emitter, "done", Map.of("reply", memoryWriteReply.get()));
+            return;
+        }
+
+        Deque<ChatTurn> turns = sessionTurns.computeIfAbsent(sessionId, ignored -> new ArrayDeque<>());
+        List<ChatTurn> history;
+        synchronized (turns) {
+            history = new ArrayList<>(turns);
+        }
+        sendSse(emitter, "process", Map.of("message", "已载入会话历史 " + history.size() + " 轮"));
+        String memoryPrompt = userMemoryService.buildMemoryPrompt(userId);
+        if (!memoryPrompt.isBlank()) {
+            sendSse(emitter, "process", Map.of("message", "已载入用户长期记忆"));
+        }
+
+        String promptWithHistory = buildPromptWithHistory(input, history, memoryPrompt);
+        sendSse(emitter, "process", Map.of("message", "Agent 开始规划、调用工具并生成回答"));
+        String rawReply = reActAgent.call(promptWithHistory, sessionId, userId);
+        Map<String, Object> payload = parsePayload(rawReply);
+        emitProcessFromPayload(emitter, payload);
+
+        String reply = extractConclusionText(payload, rawReply);
+        ModelCallStats modelCallStats = extractModelCallStats(payload);
+        cacheReply(sessionId, userId, input, reply);
+        synchronized (turns) {
+            turns.addLast(new ChatTurn(input, reply, payload));
+            while (turns.size() > MAX_TURNS_PER_SESSION) {
+                turns.removeFirst();
+            }
+        }
+
+        sendSse(emitter, "meta", Map.of(
+                "sessionId", sessionId,
+                "userId", userId,
+                "modelCallCount", modelCallStats.count(),
+                "modelCallDetails", modelCallStats.details()));
+        sendTextDeltas(emitter, reply);
+        sendSse(emitter, "done", Map.of("reply", reply));
+    }
+
+    private void handleChatModelStream(
+            ChatRequest request, Sinks.Many<ServerSentEvent<Map<String, Object>>> sink) {
+        String sessionId = normalize(request.sessionId(), "chat-session");
+        String userId = normalize(request.userId(), "chat-user");
+        String input = normalize(request.input(), "");
+        if (input.isBlank()) {
+            emitFluxEvent(sink, "meta", Map.of(
+                    "sessionId", sessionId,
+                    "userId", userId,
+                    "modelCallCount", 0,
+                    "modelCallDetails", List.of()));
+            sendTextDeltas(sink, "input 不能为空");
+            emitFluxEvent(sink, "done", Map.of("reply", "input 不能为空"));
+            return;
+        }
+
+        Optional<CachedReply> cachedReply = findCachedReply(sessionId, userId, input);
+        if (cachedReply.isPresent()) {
+            List<String> details = List.of("命中重复请求缓存，复用最近一次回复");
+            emitFluxEvent(sink, "process", Map.of("message", details.get(0)));
+            emitFluxEvent(sink, "meta", Map.of(
+                    "sessionId", sessionId,
+                    "userId", userId,
+                    "modelCallCount", 0,
+                    "modelCallDetails", details));
+            sendTextDeltas(sink, cachedReply.get().reply());
+            emitFluxEvent(sink, "done", Map.of("reply", cachedReply.get().reply()));
+            return;
+        }
+
+        Optional<String> memoryWriteReply = userMemoryService.tryWriteByInputCommand(userId, input);
+        if (memoryWriteReply.isPresent()) {
+            cacheReply(sessionId, userId, input, memoryWriteReply.get());
+            emitFluxEvent(sink, "process", Map.of("message", "已识别为记忆写入指令"));
+            emitFluxEvent(sink, "meta", Map.of(
+                    "sessionId", sessionId,
+                    "userId", userId,
+                    "modelCallCount", 0,
+                    "modelCallDetails", List.of()));
+            sendTextDeltas(sink, memoryWriteReply.get());
+            emitFluxEvent(sink, "done", Map.of("reply", memoryWriteReply.get()));
+            return;
+        }
+
+        Deque<ChatTurn> turns = sessionTurns.computeIfAbsent(sessionId, ignored -> new ArrayDeque<>());
+        List<ChatTurn> history;
+        synchronized (turns) {
+            history = new ArrayList<>(turns);
+        }
+        emitFluxEvent(sink, "process", Map.of("message", "已载入会话历史 " + history.size() + " 轮"));
+        String memoryPrompt = userMemoryService.buildMemoryPrompt(userId);
+        if (!memoryPrompt.isBlank()) {
+            emitFluxEvent(sink, "process", Map.of("message", "已载入用户长期记忆"));
+        }
+
+        String promptWithHistory = buildPromptWithHistory(input, history, memoryPrompt);
+        String[] rawReplyHolder = new String[] {""};
+        for (Map<String, Object> event : reActAgent.callWithModelFlux(promptWithHistory, sessionId, userId).toIterable()) {
+            String type = normalize(event.get("type") == null ? null : String.valueOf(event.get("type")), "");
+            if ("raw_reply".equals(type)) {
+                rawReplyHolder[0] = normalize(
+                        event.get("rawReply") == null ? null : String.valueOf(event.get("rawReply")),
+                        "");
+                continue;
+            }
+            String message = normalize(event.get("message") == null ? null : String.valueOf(event.get("message")), "");
+            if (!message.isBlank()) {
+                emitFluxEvent(sink, "process", Map.of("message", message));
+            }
+        }
+        String rawReply = rawReplyHolder[0];
+        Map<String, Object> payload = parsePayload(rawReply);
+        String reply = extractConclusionText(payload, rawReply);
+        ModelCallStats modelCallStats = extractModelCallStats(payload);
+        cacheReply(sessionId, userId, input, reply);
+        synchronized (turns) {
+            turns.addLast(new ChatTurn(input, reply, payload));
+            while (turns.size() > MAX_TURNS_PER_SESSION) {
+                turns.removeFirst();
+            }
+        }
+
+        emitFluxEvent(sink, "meta", Map.of(
+                "sessionId", sessionId,
+                "userId", userId,
+                "modelCallCount", modelCallStats.count(),
+                "modelCallDetails", modelCallStats.details()));
+        sendTextDeltas(sink, reply);
+        emitFluxEvent(sink, "done", Map.of("reply", reply));
+    }
+
+    private void emitProcessFromPayload(SseEmitter emitter, Map<String, Object> payload) throws Exception {
+        Object executionLogObj = payload.get("execution_log");
+        if (!(executionLogObj instanceof List<?> logs)) {
+            return;
+        }
+        int index = 0;
+        for (Object logObj : logs) {
+            if (!(logObj instanceof Map<?, ?> logMap)) {
+                continue;
+            }
+            index += 1;
+            String step = normalize(logMap.get("step") == null ? null : logMap.get("step").toString(), "step_" + index);
+            String toolName = normalize(logMap.get("tool_name") == null ? null : logMap.get("tool_name").toString(), "");
+            List<String> calledTools = extractCalledTools(logMap.get("output"));
+            String message;
+            if ("reasoning".equals(toolName) || step.startsWith("reasoning_round_")) {
+                message = "第 " + index + " 步：" + inferPurpose(calledTools, logMap.get("output"));
+            } else {
+                message = "第 " + index + " 步：调用工具 " + toolName;
+            }
+            sendSse(emitter, "process", Map.of("message", message));
+        }
+    }
+
+    private void sendTextDeltas(SseEmitter emitter, String text) throws Exception {
+        String normalizedText = normalize(text, "");
+        if (normalizedText.isBlank()) {
+            return;
+        }
+        for (int offset = 0; offset < normalizedText.length(); ) {
+            int next = normalizedText.offsetByCodePoints(offset, 1);
+            sendSse(emitter, "reply_delta", Map.of("text", normalizedText.substring(offset, next)));
+            offset = next;
+        }
+    }
+
+    private void sendTextDeltas(Sinks.Many<ServerSentEvent<Map<String, Object>>> sink, String text) {
+        String normalizedText = normalize(text, "");
+        if (normalizedText.isBlank()) {
+            return;
+        }
+        for (int offset = 0; offset < normalizedText.length(); ) {
+            int next = normalizedText.offsetByCodePoints(offset, 1);
+            emitFluxEvent(sink, "reply_delta", Map.of("text", normalizedText.substring(offset, next)));
+            offset = next;
+        }
+    }
+
+    private void sendSse(SseEmitter emitter, String eventName, Object data) throws Exception {
+        emitter.send(SseEmitter.event().name(eventName).data(data, MediaType.APPLICATION_JSON));
+    }
+
+    private void emitFluxEvent(
+            Sinks.Many<ServerSentEvent<Map<String, Object>>> sink, String eventName, Map<String, Object> data) {
+        sink.tryEmitNext(ServerSentEvent.<Map<String, Object>>builder()
+                .event(eventName)
+                .data(data)
+                .build());
+    }
+
+    private void appendPendingClarificationContext(StringBuilder sb, List<ChatTurn> history) {
+        if (history.isEmpty()) {
+            return;
+        }
+        Map<String, Object> pendingClarification = extractLatestPendingClarification(history);
+        if (pendingClarification.isEmpty()) {
+            return;
+        }
+        sb.append("上一轮存在结构化澄清上下文。")
+                .append("如果本轮用户只输入 A/B/C、确认、取消、或某个候选值，请优先按该澄清上下文解释，而不是当作新任务。\n");
+        appendIfPresent(sb, "澄清ID", pendingClarification.get("id"));
+        appendIfPresent(sb, "原始请求", pendingClarification.get("original_user_input"));
+        appendIfPresent(sb, "缺失槽位", pendingClarification.get("missing_slots"));
+        appendIfPresent(sb, "候选选项", pendingClarification.get("suggested_options"));
+        appendIfPresent(sb, "默认假设", pendingClarification.get("default_assumption"));
+        appendIfPresent(sb, "恢复策略", pendingClarification.get("resume_policy"));
+        appendIfPresent(sb, "槽位详情", pendingClarification.get("slots"));
+        sb.append("请将本轮用户回复与上述澄清上下文合并，形成完整任务后继续执行。\n");
+    }
+
+    private Map<String, Object> extractLatestPendingClarification(List<ChatTurn> history) {
+        ChatTurn lastTurn = history.get(history.size() - 1);
+        return extractPendingClarification(lastTurn.payload());
+    }
+
+    private Map<String, Object> extractPendingClarification(Map<String, Object> payload) {
+        Object executionLogObj = payload.get("execution_log");
+        if (!(executionLogObj instanceof List<?> logs)) {
+            return Map.of();
+        }
+        for (int i = logs.size() - 1; i >= 0; i--) {
+            Object logObj = logs.get(i);
+            if (!(logObj instanceof Map<?, ?> logMap)) {
+                continue;
+            }
+            String toolName = normalize(logMap.get("tool_name") == null ? null : logMap.get("tool_name").toString(), "");
+            if (!"clarify_requirement".equals(toolName)) {
+                continue;
+            }
+            Map<String, Object> output = asStringObjectMap(logMap.get("output"));
+            Map<String, Object> data = asStringObjectMap(output.get("data"));
+            Map<String, Object> pending = asStringObjectMap(data.get("pending_clarification"));
+            if (!pending.isEmpty()) {
+                return pending;
+            }
+        }
+        return Map.of();
+    }
+
+    private Map<String, Object> asStringObjectMap(Object value) {
+        if (!(value instanceof Map<?, ?> raw)) {
+            return Map.of();
+        }
+        LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                result.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return result;
+    }
+
+    private void appendIfPresent(StringBuilder sb, String label, Object value) {
+        if (value == null) {
+            return;
+        }
+        if (value instanceof String text && text.isBlank()) {
+            return;
+        }
+        sb.append(label).append(": ").append(toPromptValue(value)).append("\n");
+    }
+
+    private String toPromptValue(Object value) {
+        try {
+            return OBJECT_MAPPER.writeValueAsString(value);
+        } catch (Exception ignored) {
+            return String.valueOf(value);
+        }
     }
 
     private String normalize(String value, String defaultValue) {
@@ -320,8 +670,8 @@ public class AgentDemoController {
         return "通用推理";
     }
 
-    private Optional<CachedReply> findCachedReply(String userId, String input) {
-        String cacheKey = buildCacheKey(userId, input);
+    private Optional<CachedReply> findCachedReply(String sessionId, String userId, String input) {
+        String cacheKey = buildCacheKey(sessionId, userId, input);
         CachedReply cachedReply = userRequestCache.get(cacheKey);
         if (cachedReply == null) {
             return Optional.empty();
@@ -333,13 +683,13 @@ public class AgentDemoController {
         return Optional.of(cachedReply);
     }
 
-    private void cacheReply(String userId, String input, String reply) {
-        String cacheKey = buildCacheKey(userId, input);
+    private void cacheReply(String sessionId, String userId, String input, String reply) {
+        String cacheKey = buildCacheKey(sessionId, userId, input);
         userRequestCache.put(cacheKey, new CachedReply(reply, Instant.now()));
     }
 
-    private String buildCacheKey(String userId, String input) {
-        return userId + "\n" + input;
+    private String buildCacheKey(String sessionId, String userId, String input) {
+        return userId + "\n" + sessionId + "\n" + input;
     }
 
     private Map<String, Object> toMemoryItem(UserMemoryEntry entry) {
@@ -359,7 +709,7 @@ public class AgentDemoController {
     public record MemoryUpsertRequest(Object value, Long ttlSeconds) {
     }
 
-    private record ChatTurn(String userInput, String assistantReply) {
+    private record ChatTurn(String userInput, String assistantReply, Map<String, Object> payload) {
     }
 
     private record ModelCallStats(int count, List<String> details) {

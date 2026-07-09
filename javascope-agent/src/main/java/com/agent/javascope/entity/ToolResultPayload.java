@@ -2,7 +2,9 @@ package com.agent.javascope.entity;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 public class ToolResultPayload {
 
@@ -21,8 +23,13 @@ public class ToolResultPayload {
     private List<String> validationErrors = new ArrayList<>();
     /** 工具失败时是否可重试。 */
     private boolean retryable;
+    /** 结构化错误码，便于框架或业务侧做失败分类。 */
+    @JsonProperty("error_code")
+    private String errorCode = "";
     /** 工具业务数据。不同工具返回结构不同，因此保留为对象。 */
     private Object data;
+    /** 工具调用元数据，例如 trace_id、duration_ms、source、cache_hit、warnings。 */
+    private Map<String, Object> metadata = new LinkedHashMap<>();
 
     public ToolResultPayload() {}
 
@@ -105,5 +112,21 @@ public class ToolResultPayload {
 
     public void setData(Object data) {
         this.data = data;
+    }
+
+    public String getErrorCode() {
+        return errorCode;
+    }
+
+    public void setErrorCode(String errorCode) {
+        this.errorCode = errorCode == null ? "" : errorCode;
+    }
+
+    public Map<String, Object> getMetadata() {
+        return metadata == null ? new LinkedHashMap<>() : metadata;
+    }
+
+    public void setMetadata(Map<String, Object> metadata) {
+        this.metadata = metadata == null ? new LinkedHashMap<>() : metadata;
     }
 }

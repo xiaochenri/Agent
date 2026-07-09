@@ -59,6 +59,10 @@ public abstract class Agent implements SmartInitializingSingleton {
         return modelClient.chat(prompt);
     }
 
+    protected String chatModelStream(String prompt, Consumer<String> deltaConsumer) {
+        return modelClient.chatStream(prompt, deltaConsumer);
+    }
+
     protected AgentExecutionLogEntry buildReasoningLog(
             String input, int round, String validationFeedback, Map<String, Object> response) {
         return new AgentExecutionLogEntry(

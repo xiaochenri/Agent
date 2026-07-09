@@ -1,0 +1,6 @@
+/javascope-agent/target/
+/stockmind-bootstrap/target/
+/stockmind-common/target/
+/.mvn-settings.xml
+/.idea/
+/.agentscope/

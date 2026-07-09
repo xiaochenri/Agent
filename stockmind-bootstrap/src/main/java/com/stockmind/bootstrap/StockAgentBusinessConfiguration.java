@@ -16,12 +16,25 @@ public class StockAgentBusinessConfiguration {
     public AgentBusinessPromptCustomizer stockPromptCustomizer() {
         return new AgentBusinessPromptCustomizer() {
             @Override
+            public String customizeDirectReplyPrompt(String basePrompt) {
+                return basePrompt + """
+
+                        直答业务规则补充（股票场景）：
+                        - 你是股票分析助手，聚焦个股/板块的事实分析、证据整理与风险提示
+                        - 对非任务型请求（如“你是谁”“你能帮我做什么”），必须直接输出面向用户的自然回答，不得输出“非任务型请求/无需进入工具链”等内部流程描述
+                        - 当用户问“你能帮我做什么”时，core_conclusions 至少包含：你能提供的能力列表 + 1-2条用户可直接输入的示例
+                        - 当用户问“你是谁”时，core_conclusions 应先说明你的股票分析助手角色，再给出可执行帮助范围
+                        - 直答场景禁止承诺实时或确定性投资结论；涉及投资判断时必须提示需要结合行情、新闻、财报等证据进一步分析
+                        """;
+            }
+
+            @Override
             public String customizeActionPrompt(String basePrompt) {
                 return basePrompt + """
-                        
+
                         角色设定（股票分析助手）：
                         - 你是一个用于股票分析的助手，聚焦个股/板块的事实分析与风险提示
-                        
+
                         业务规则补充（股票场景）：
                         - 工具使用场景必须匹配步骤目标，不允许“为调用而调用”
                         - 股票任务中，进入业务检索前需保证“标的+时间范围”明确；分析维度缺失时可按默认风险框架执行（价格波动/事件催化/基本面信号）
@@ -130,6 +143,39 @@ public class StockAgentBusinessConfiguration {
                 return "请先补充上述关键项；收到后我会继续调用行情/新闻/财报工具完成分析。";
             }
 
+            @Override
+            public List<String> slotCandidates(String userInput, String slotName) {
+                return switch (slotName) {
+                    case "analysis_object" -> List.of("AAPL（推荐）", "600519", "自定义股票代码");
+                    case "time_window" -> List.of("近一周（推荐）", "近一月", "自定义区间");
+                    case "analysis_dimension" -> List.of("价格波动/新闻事件（推荐）", "财报基本面/风险提示", "自定义维度");
+                    default -> List.of();
+                };
+            }
+
+            @Override
+            public String defaultValue(String userInput, String slotName, String memory) {
+                return switch (slotName) {
+                    case "analysis_object" -> inferTarget(userInput);
+                    case "time_window" -> inferTimeWindow(firstNonBlank(memory, userInput));
+                    case "analysis_dimension" -> inferFocus(firstNonBlank(memory, userInput));
+                    default -> "";
+                };
+            }
+
+            @Override
+            public boolean confirmBeforeAction(String userInput, List<String> missingFields) {
+                if (userInput == null || userInput.isBlank()) {
+                    return false;
+                }
+                String normalized = userInput.toLowerCase();
+                return normalized.contains("买入")
+                        || normalized.contains("卖出")
+                        || normalized.contains("下单")
+                        || normalized.contains("清仓")
+                        || normalized.contains("转账");
+            }
+
             private boolean containsTarget(String text) {
                 if (text == null || text.isBlank()) {
                     return false;
@@ -221,6 +267,13 @@ public class StockAgentBusinessConfiguration {
                     return "价格波动/新闻事件/财报基本面";
                 }
                 return "价格波动/新闻事件";
+            }
+
+            private String firstNonBlank(String first, String second) {
+                if (first != null && !first.isBlank()) {
+                    return first;
+                }
+                return second == null ? "" : second;
             }
         };
     }

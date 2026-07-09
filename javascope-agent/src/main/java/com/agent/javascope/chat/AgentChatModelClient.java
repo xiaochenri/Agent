@@ -13,6 +13,8 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -91,6 +93,96 @@ public class AgentChatModelClient {
                     "error_type", "IOException",
                     "message", jsonCodec.normalize(e.getMessage(), ""))));
             return "{}";
+        }
+    }
+
+    public String chatStream(String prompt, Consumer<String> deltaConsumer) {
+        String apiKey = jsonCodec.normalize(properties.getApiKey(), "");
+        if (apiKey.isEmpty()) {
+            throw new IllegalStateException("stockmind.agent-runtime.api-key 未配置，无法调用大模型 API。");
+        }
+        String systemPrompt = jsonCodec.normalize(properties.getSystemInstruction(), "你是通用执行器。");
+        String userPrompt = jsonCodec.normalize(prompt, "");
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("model", jsonCodec.normalize(properties.getModel(), ""));
+        body.put("temperature", properties.getTemperature());
+        body.put("response_format", Map.of("type", "json_object"));
+        body.put("stream", true);
+        body.put(
+                "messages",
+                List.of(
+                        Map.of("role", "system", "content", systemPrompt),
+                        Map.of("role", "user", "content", userPrompt)));
+        logModelRequest(body);
+        logModelRequestText(systemPrompt, userPrompt);
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(resolveBaseUrl() + "/chat/completions"))
+                .timeout(Duration.ofSeconds(properties.getTimeoutSeconds()))
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + apiKey)
+                .POST(HttpRequest.BodyPublishers.ofString(jsonCodec.toJson(body), StandardCharsets.UTF_8))
+                .build();
+
+        StringBuilder content = new StringBuilder();
+        try {
+            HttpResponse<Stream<String>> response = httpClient.send(request, HttpResponse.BodyHandlers.ofLines());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                String responseText;
+                try (Stream<String> lines = response.body()) {
+                    responseText = String.join("\n", lines.toList());
+                }
+                logModelRawResponse(response.statusCode(), responseText);
+                return "{}";
+            }
+            try (Stream<String> lines = response.body()) {
+                lines.forEach(line -> consumeStreamLine(line, content, deltaConsumer));
+            }
+            String fullContent = jsonCodec.normalize(content.toString(), "{}");
+            logModelParsedContent(fullContent);
+            logModelResponseText(fullContent);
+            return fullContent;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            LOG.warn("agent_model_io={}", jsonCodec.toJson(Map.of(
+                    "event", "model_stream_exception",
+                    "error_type", "InterruptedException",
+                    "message", jsonCodec.normalize(e.getMessage(), ""))));
+            return "{}";
+        } catch (IOException e) {
+            LOG.warn("agent_model_io={}", jsonCodec.toJson(Map.of(
+                    "event", "model_stream_exception",
+                    "error_type", "IOException",
+                    "message", jsonCodec.normalize(e.getMessage(), ""))));
+            return "{}";
+        }
+    }
+
+    private void consumeStreamLine(String line, StringBuilder content, Consumer<String> deltaConsumer) {
+        String normalizedLine = jsonCodec.normalize(line, "");
+        if (normalizedLine.isEmpty() || !normalizedLine.startsWith("data:")) {
+            return;
+        }
+        String data = normalizedLine.substring("data:".length()).trim();
+        if (data.isEmpty() || "[DONE]".equals(data)) {
+            return;
+        }
+        Map<String, Object> parsed = jsonCodec.parseJson(data);
+        Object choicesObj = parsed.get("choices");
+        if (!(choicesObj instanceof List<?> choices) || choices.isEmpty()) {
+            return;
+        }
+        Map<String, Object> first = jsonCodec.asMap(choices.get(0));
+        Map<String, Object> delta = jsonCodec.asMap(first.get("delta"));
+        Object contentObj = delta.get("content");
+        if (contentObj == null) {
+            return;
+        }
+        String text = String.valueOf(contentObj);
+        content.append(text);
+        if (deltaConsumer != null && !text.isBlank()) {
+            deltaConsumer.accept(text);
         }
     }
 

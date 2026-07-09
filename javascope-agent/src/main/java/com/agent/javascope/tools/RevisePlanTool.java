@@ -1,6 +1,7 @@
 package com.agent.javascope.tools;
 
 import com.agent.javascope.chat.AgentChatModelClient;
+import com.agent.javascope.entity.AgentToolDefinition;
 import com.agent.javascope.entity.FailedStepHistoryItem;
 import com.agent.javascope.entity.PlanStepDefinition;
 import com.agent.javascope.entity.PlanToolData;
@@ -8,6 +9,8 @@ import com.agent.javascope.entity.RevisePlanRequest;
 import com.agent.javascope.entity.ToolResultPayload;
 import com.agent.javascope.prompt.AgentPromptProvider;
 import com.agent.javascope.spi.AgentTool;
+import com.agent.javascope.spi.ToolType;
+import com.agent.javascope.spi.ToolVisibility;
 import com.agent.javascope.util.AgentJsonCodecUtil;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -36,7 +39,33 @@ public class RevisePlanTool {
         this.maxRetry = maxRetry;
     }
 
-    @AgentTool(name = "revise_plan", description = "当计划执行失败、依赖阻塞或结果与预期不一致时，基于执行偏差修正计划")
+    @AgentTool(
+            name = "revise_plan",
+            title = "修正执行计划",
+            description = "当计划执行失败、依赖阻塞或结果与预期不一致时，基于执行偏差修正计划。",
+            namespace = "system.planning",
+            category = "planning",
+            tags = {"system", "planning", "replan"},
+            toolType = ToolType.SYSTEM,
+            visibility = ToolVisibility.MODEL_INTERNAL,
+            readOnly = true,
+            idempotent = false,
+            allowedDirectCall = true,
+            allowedInPlanStep = false,
+            inputSchema = """
+                    {
+                      "type": "object",
+                      "properties": {
+                        "user_input": {"type": "string", "description": "用户原始任务，可省略。"},
+                        "reason": {"type": "string", "description": "触发重规划的原因。"},
+                        "current_plan": {"type": "array", "description": "当前计划步骤数组。"},
+                        "failed_step_index": {"type": "integer", "description": "失败步骤索引。"},
+                        "failed_step": {"type": "object", "description": "失败步骤定义。"},
+                        "failure_context": {"type": "object", "description": "失败工具输出和校验上下文。"}
+                      },
+                      "required": []
+                    }
+                    """)
     public String revisePlan(Map<String, Object> input, String rawInput) {
         RevisePlanRequest request = json.convert(input, RevisePlanRequest.class);
         String userInput = normalize(request.getUserInput(), rawInput);
@@ -105,6 +134,13 @@ public class RevisePlanTool {
             }
             if (normalize(step.getTool(), "").isEmpty()) {
                 errors.add("plan[" + i + "].tool 不能为空");
+            } else {
+                AgentToolDefinition toolDefinition = toolExecutor.getToolDefinition(step.getTool());
+                if (toolDefinition == null) {
+                    errors.add("plan[" + i + "].tool 未注册: " + step.getTool());
+                } else if (!toolDefinition.isAllowedInPlanStep()) {
+                    errors.add("plan[" + i + "].tool 不允许作为计划步骤: " + step.getTool());
+                }
             }
             if (step.getInput() == null) {
                 errors.add("plan[" + i + "].input 必须是对象");
