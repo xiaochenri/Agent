@@ -12,7 +12,10 @@
 
 ## 模块划分
 
-- `javascope-agent`: 独立 Agent 运行时，不依赖具体股票业务
+- `javascope-agent-spi`: Agent 扩展契约、工具注解与共享协议
+- `javascope-agent-core`: Agent 核心运行时，不依赖 Spring 和具体股票业务
+- `javascope-agent-model-openai`: OpenAI Chat Completions 兼容模型适配器
+- `javascope-agent-spring-boot-starter`: Spring Boot 自动配置与反射工具适配器
   - `ReActAgent`: 主执行入口，负责路由、推理轮次、工具调用和最终回答
   - `InputRouter`: 将输入分为 `chat`、`meta`、`task`；非任务请求走直答分支
   - `ToolCallDispatcher` / `PlanExecutor`: 执行模型返回的工具调用和计划步骤
@@ -83,7 +86,7 @@
 
 ## 配置
 
-`stockmind-bootstrap/src/main/resources/application.yml` 会导入 `javascope-agent/src/main/resources/application-agent-runtime.yml`。
+`stockmind-bootstrap/src/main/resources/application.yml` 会导入 `javascope-agent-spring-boot-starter/src/main/resources/application-agent-runtime.yml`。
 
 建议通过环境变量覆盖敏感配置，不要把真实密钥、数据库密码提交到仓库：
 

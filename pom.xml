@@ -14,7 +14,10 @@
         <module>stockmind-application</module>
         <module>stockmind-infrastructure</module>
         <module>stockmind-bootstrap</module>
-        <module>javascope-agent</module>
+        <module>javascope-agent-spi</module>
+        <module>javascope-agent-core</module>
+        <module>javascope-agent-model-openai</module>
+        <module>javascope-agent-spring-boot-starter</module>
     </modules>
 
     <properties>
