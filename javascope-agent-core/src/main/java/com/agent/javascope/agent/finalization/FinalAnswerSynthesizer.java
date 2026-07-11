@@ -1,17 +1,20 @@
-package com.agent.javascope.agent;
+package com.agent.javascope.agent.finalization;
 
-import com.agent.javascope.runtime.AgentRuntimeProperties;
+import com.agent.javascope.agent.routing.AgentToolCallExtractor;
+import com.agent.javascope.agent.runtime.RuntimeState;
+import com.agent.javascope.contract.plan.PlanStepDefinition;
 import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
 import com.agent.javascope.entity.execution.AgentToolCall;
-import com.agent.javascope.contract.plan.PlanStepDefinition;
 import com.agent.javascope.entity.plan.PlanStepState;
-import com.agent.javascope.plan.PlanStepStatus;
-import com.agent.javascope.tools.validation.StepValidatorTool;
 import com.agent.javascope.json.AgentJsonCodecUtil;
+import com.agent.javascope.plan.PlanStepStatus;
+import com.agent.javascope.runtime.AgentRuntimeProperties;
+import com.agent.javascope.tools.validation.StepValidatorTool;
 import com.agent.javascope.verifier.IndependentVerifierService;
 import com.agent.javascope.verifier.VerifierCheck;
 import com.agent.javascope.verifier.VerifierNextAction;
 import com.agent.javascope.verifier.VerifierResult;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -20,7 +23,7 @@ import java.util.Map;
 /**
  * 负责最终答案的提取、验证、兜底生成和轮次耗尽后的最终合成。
  */
-class FinalAnswerSynthesizer {
+public class FinalAnswerSynthesizer {
 
     /** 控制最终答案验证开关和最大轮次。 */
     private final AgentRuntimeProperties properties;
@@ -31,7 +34,7 @@ class FinalAnswerSynthesizer {
     /** 最终合成时用来阻止模型继续请求工具。 */
     private final AgentToolCallExtractor toolCallExtractor;
 
-    FinalAnswerSynthesizer(
+    public FinalAnswerSynthesizer(
             AgentRuntimeProperties properties,
             AgentJsonCodecUtil json,
             IndependentVerifierService independentVerifierService,
@@ -45,7 +48,7 @@ class FinalAnswerSynthesizer {
     /**
      * 处理模型本轮直接给出的 final_answer；验证失败时写入反馈并允许主循环继续。
      */
-    boolean handleModelFinalAnswer(String input, int round, RuntimeState state) {
+    public boolean handleModelFinalAnswer(String input, int round, RuntimeState state) {
         state.lastFinalAnswer = json.asMap(state.lastResponse.get("final_answer"));
         if (!properties.isFinalAnswerValidationEnabled()) {
             if (state.lastFinalAnswer == null || state.lastFinalAnswer.isEmpty()) {
@@ -66,7 +69,7 @@ class FinalAnswerSynthesizer {
     /**
      * 最大 reasoning 轮次耗尽后的统一收口逻辑：先尝试最终合成，否则生成 fallback。
      */
-    void handleRoundsExhausted(String input, RuntimeState state, ReasoningCallback reasoningCallback) {
+    public void handleRoundsExhausted(String input, RuntimeState state, ReasoningCallback reasoningCallback) {
         if (tryFinalSynthesis(input, state, reasoningCallback)) {
             state.blockedReason = blockedReason(state.lastFinalAnswer, state.executionLog);
             return;
@@ -91,14 +94,14 @@ class FinalAnswerSynthesizer {
     /**
      * 给直答等已结束路径补齐 blockedReason。
      */
-    void applyBlockedReason(RuntimeState state) {
+    public void applyBlockedReason(RuntimeState state) {
         state.blockedReason = blockedReason(state.lastFinalAnswer, state.executionLog);
     }
 
     /**
      * 澄清阶段模型未按协议输出 final_answer 时的兜底回复。
      */
-    Map<String, Object> buildClarificationFinalAnswerFallback(Map<String, Object> data) {
+    public Map<String, Object> buildClarificationFinalAnswerFallback(Map<String, Object> data) {
         Map<String, Object> output = new LinkedHashMap<>();
         output.put("core_conclusions", List.of("关键信息缺失，已暂停后续执行，等待你补充后继续。"));
         List<String> missingFields = json.asStringList(data.get("missing_fields"));

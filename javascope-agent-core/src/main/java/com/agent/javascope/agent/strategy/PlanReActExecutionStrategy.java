@@ -1,45 +1,48 @@
-package com.agent.javascope.agent;
+package com.agent.javascope.agent.strategy;
 
-import com.agent.javascope.model.AgentChatModelClient;
-import com.agent.javascope.runtime.AgentRuntimeProperties;
+import com.agent.javascope.agent.finalization.FinalAnswerSynthesizer;
+import com.agent.javascope.agent.planning.PlanExecutor;
+import com.agent.javascope.agent.planning.ToolCallDispatcher;
+import com.agent.javascope.agent.planning.ToolDispatchStatus;
+import com.agent.javascope.agent.prompt.PromptAssembler;
+import com.agent.javascope.agent.routing.AgentToolCallExtractor;
+import com.agent.javascope.agent.runtime.Agent;
+import com.agent.javascope.agent.runtime.RuntimeState;
+import com.agent.javascope.context.budget.PromptBudget;
+import com.agent.javascope.context.projection.ContextManager;
+import com.agent.javascope.context.projection.ContextRequest;
+import com.agent.javascope.context.projection.WorkingContext;
+import com.agent.javascope.context.trace.ExecutionEventType;
+import com.agent.javascope.context.trace.ExecutionLogStore;
+import com.agent.javascope.contract.plan.PlanStepDefinition;
 import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
 import com.agent.javascope.entity.execution.AgentToolCall;
-import com.agent.javascope.contract.plan.PlanStepDefinition;
 import com.agent.javascope.entity.plan.PlanStepState;
 import com.agent.javascope.entity.plan.PlanStepView;
 import com.agent.javascope.entity.routing.RouteDecision;
+import com.agent.javascope.json.AgentJsonCodecUtil;
+import com.agent.javascope.model.AgentChatModelClient;
 import com.agent.javascope.prompt.AgentPromptProvider;
+import com.agent.javascope.runtime.AgentRuntimeProperties;
 import com.agent.javascope.tool.runtime.AgentToolExecutor;
 import com.agent.javascope.tools.validation.StepValidatorTool;
 import com.agent.javascope.verifier.IndependentVerifierService;
-import com.agent.javascope.context.projection.ContextManager;
-import com.agent.javascope.context.projection.ContextRequest;
-import com.agent.javascope.context.trace.ExecutionEventType;
-import com.agent.javascope.context.trace.ExecutionLogStore;
-import com.agent.javascope.context.trace.ExecutionTrace;
-import com.agent.javascope.context.budget.PromptBudget;
-import com.agent.javascope.context.projection.WorkingContext;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.function.Consumer;
 
-import com.agent.javascope.json.AgentJsonCodecUtil;
-import reactor.core.publisher.Flux;
-import reactor.core.scheduler.Schedulers;
-
-public class ReActAgent extends Agent {
+/** 默认的计划型 ReAct 执行策略，保留原有路由、规划、执行和收口行为。 */
+public class PlanReActExecutionStrategy extends Agent implements ExecutionStrategy {
 
     private final ToolCallDispatcher toolCallDispatcher;
-    private final InputRouter inputRouter;
     private final FinalAnswerSynthesizer finalAnswerSynthesizer;
     private final AgentToolCallExtractor toolCallExtractor;
-    private final ExecutionLogStore executionLogStore;
     private final ContextManager contextManager;
     private final PromptAssembler promptAssembler;
 
-    public ReActAgent(
+    public PlanReActExecutionStrategy(
             AgentRuntimeProperties properties,
             AgentPromptProvider promptProvider,
             AgentToolExecutor toolExecutor,
@@ -52,124 +55,26 @@ public class ReActAgent extends Agent {
             PromptAssembler promptAssembler) {
         super(properties, promptProvider, toolExecutor, modelClient, json);
         this.toolCallExtractor = new AgentToolCallExtractor(json);
-        this.inputRouter = new InputRouter(promptProvider, modelClient, json, toolCallExtractor);
         this.finalAnswerSynthesizer =
                 new FinalAnswerSynthesizer(properties, json, independentVerifierService, toolCallExtractor);
         PlanExecutor planExecutor = new PlanExecutor(properties, toolExecutor, json, stepValidatorTool);
         this.toolCallDispatcher = new ToolCallDispatcher(promptProvider, toolExecutor, json, planExecutor);
-        this.executionLogStore = executionLogStore;
         this.contextManager = contextManager;
         this.promptAssembler = promptAssembler;
     }
 
-    public String call(String input, String sessionId, String userId) {
-        RuntimeState state = execute(input, sessionId, userId);
-        completeTrace(state);
-        return respondAsText(
-                state.trace.executionId(),
-                state.latestPlanResult,
-                buildPlanView(state),
-                state.executionLog,
-                state.revisedPlan,
-                state.planLifecycle,
-                state.blockedReason,
-                state.lastFinalAnswer,
-                state.riskFlags);
+    @Override
+    public boolean supports(RouteDecision routeDecision) {
+        return routeDecision != null && "task".equals(routeDecision.getRoute());
     }
 
-    public String callStream(String input, String sessionId, String userId, Consumer<String> chunkConsumer) {
-        RuntimeState state = execute(input, sessionId, userId);
-        completeTrace(state);
-        return respondAsStream(
-                state.trace.executionId(),
-                state.latestPlanResult,
-                buildPlanView(state),
-                state.executionLog,
-                state.revisedPlan,
-                state.planLifecycle,
-                state.blockedReason,
-                state.lastFinalAnswer,
-                state.riskFlags,
-                chunkConsumer);
-    }
-
-    public String callWithModelStream(
-            String input, String sessionId, String userId, Consumer<Map<String, Object>> eventConsumer) {
-        RuntimeState state = execute(input, sessionId, userId, eventConsumer, true);
-        completeTrace(state);
-        emitStreamEvent(eventConsumer, "process", "Agent 执行完成，正在整理最终回答");
-        return respondAsText(
-                state.trace.executionId(),
-                state.latestPlanResult,
-                buildPlanView(state),
-                state.executionLog,
-                state.revisedPlan,
-                state.planLifecycle,
-                state.blockedReason,
-                state.lastFinalAnswer,
-                state.riskFlags);
-    }
-
-    public Flux<Map<String, Object>> callWithModelFlux(String input, String sessionId, String userId) {
-        return Flux.<Map<String, Object>>create(sink -> {
-            try {
-                String rawReply = callWithModelStream(input, sessionId, userId, event -> {
-                    if (!sink.isCancelled()) {
-                        sink.next(event);
-                    }
-                });
-                if (!sink.isCancelled()) {
-                    sink.next(Map.of("type", "raw_reply", "rawReply", rawReply));
-                    sink.complete();
-                }
-            } catch (Exception e) {
-                if (!sink.isCancelled()) {
-                    sink.error(e);
-                }
-            }
-        }).subscribeOn(Schedulers.boundedElastic());
-    }
-
-    private RuntimeState execute(String input, String sessionId, String userId) {
-        return execute(input, sessionId, userId, null, false);
-    }
-
-    private RuntimeState execute(
-            String input,
-            String sessionId,
-            String userId,
-            Consumer<Map<String, Object>> eventConsumer,
-            boolean useModelStream) {
+    @Override
+    public RuntimeState execute(ExecutionRequest request) {
+        String input = request.input();
+        RuntimeState state = request.state();
+        Consumer<Map<String, Object>> eventConsumer = request.eventConsumer();
+        boolean useModelStream = request.useModelStream();
         ensureAgentInitialized();
-        RuntimeState state = new RuntimeState(new ExecutionTrace(
-                UUID.randomUUID().toString(), executionLogStore, json));
-        state.trace.record(ExecutionEventType.USER_INPUT_RECEIVED, Map.of(
-                "session_id", sessionId == null ? "" : sessionId,
-                "user_id", userId == null ? "" : userId,
-                "input", input == null ? "" : input), Map.of());
-        emitStreamEvent(eventConsumer, "process", "正在识别本轮输入类型");
-        RouteDecision routeDecision = useModelStream
-                ? inputRouter.routeStream(
-                        input,
-                        state,
-                        systemInstruction,
-                        buildModelProgressConsumer(eventConsumer, "路由模型正在流式返回"))
-                : inputRouter.route(input, state, systemInstruction);
-        state.routeDecision = routeDecision;
-        emitStreamEvent(eventConsumer, "process", "输入类型：" + routeDecision.getRoute());
-        if (!"task".equals(routeDecision.getRoute())) {
-            emitStreamEvent(eventConsumer, "process", "进入直接回复模式");
-            state.lastFinalAnswer = useModelStream
-                    ? inputRouter.buildDirectRouteFinalAnswerStream(
-                            input,
-                            routeDecision,
-                            state,
-                            systemInstruction,
-                            buildModelProgressConsumer(eventConsumer, "回复模型正在流式返回"))
-                    : inputRouter.buildDirectRouteFinalAnswer(input, routeDecision, state, systemInstruction);
-            finalAnswerSynthesizer.applyBlockedReason(state);
-            return state;
-        }
 
         for (int round = 1; round <= properties.getMaxRounds(); round++) {
             emitStreamEvent(eventConsumer, "process", "第 " + round + " 轮：模型分析下一步动作");

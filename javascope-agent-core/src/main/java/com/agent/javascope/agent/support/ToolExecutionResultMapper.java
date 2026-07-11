@@ -1,7 +1,8 @@
-package com.agent.javascope.agent;
+package com.agent.javascope.agent.support;
 
 import com.agent.javascope.json.AgentJsonCodecUtil;
 import com.agent.javascope.tool.runtime.ToolExecutionResult;
+
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -12,12 +13,12 @@ import java.util.Map;
  * <p>状态机本身必须使用 {@link ToolExecutionResult#isSuccess()} 判断成败；本类只解决旧日志、
  * Prompt 和业务 DTO 仍需要 {@code tool}/{@code success|failed} 字段的问题。</p>
  */
-final class ToolExecutionResultMapper {
+public final class ToolExecutionResultMapper {
 
     private ToolExecutionResultMapper() {}
 
     /** 将结果转换为兼容协议，避免枚举序列化为 {@code SUCCESS}/{@code FAILED} 泄漏到旧消费者。 */
-    static Map<String, Object> toCompatibilityMap(ToolExecutionResult result, AgentJsonCodecUtil json) {
+    public static Map<String, Object> toCompatibilityMap(ToolExecutionResult result, AgentJsonCodecUtil json) {
         Map<String, Object> mapped = new LinkedHashMap<>();
         mapped.put("tool", result.toolName());
         mapped.put("status", result.isSuccess() ? "success" : "failed");

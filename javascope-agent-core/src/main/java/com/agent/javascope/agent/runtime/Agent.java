@@ -1,31 +1,26 @@
-package com.agent.javascope.agent;
+package com.agent.javascope.agent.runtime;
 
+import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
+import com.agent.javascope.entity.plan.PlanRevisionRecord;
+import com.agent.javascope.entity.plan.PlanStepView;
+import com.agent.javascope.entity.plan.PlanToolData;
+import com.agent.javascope.entity.response.*;
+import com.agent.javascope.json.AgentJsonCodecUtil;
 import com.agent.javascope.model.AgentChatModelClient;
 import com.agent.javascope.model.ModelCallException;
 import com.agent.javascope.model.ModelRequest;
 import com.agent.javascope.model.ModelResult;
-import com.agent.javascope.runtime.AgentRuntimeProperties;
-import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
-import com.agent.javascope.entity.response.AgentMessageSection;
-import com.agent.javascope.entity.response.AgentNextAction;
-import com.agent.javascope.entity.response.AgentResponse;
-import com.agent.javascope.entity.response.AgentResponseMetadata;
-import com.agent.javascope.entity.response.AgentRuntimeView;
-import com.agent.javascope.entity.response.AgentUserMessage;
-import com.agent.javascope.entity.plan.PlanRevisionRecord;
-import com.agent.javascope.entity.plan.PlanStepView;
-import com.agent.javascope.entity.plan.PlanToolData;
 import com.agent.javascope.prompt.AgentPromptProvider;
+import com.agent.javascope.runtime.AgentRuntimeProperties;
 import com.agent.javascope.tool.runtime.AgentToolExecutor;
+import com.fasterxml.jackson.databind.JsonNode;
+
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
-
-import com.agent.javascope.json.AgentJsonCodecUtil;
-import com.fasterxml.jackson.databind.JsonNode;
 
 public abstract class Agent {
 

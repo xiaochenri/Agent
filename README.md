@@ -87,6 +87,8 @@ ToolRegistry -> ToolAuthorizationPolicy -> ToolMiddlewareChain -> ToolInvoker
 
 任务路由会同时给出执行模式：`direct` 用于单步事实查询，允许直接调用必要业务工具；`planned` 用于分析、推荐及多步骤任务，首轮仅向模型暴露 `create_plan`。因此计划门禁不会以拒绝一次正常工具调用的方式消耗推理轮次。
 
+执行层通过 `ExecutionStrategy` 抽象扩展。`ReActAgent` 统一创建 Trace、执行路由并选择策略：chat/meta 由 `DirectReplyExecutionStrategy` 直接回复，task 由 `PlanReActExecutionStrategy` 承接既有 ReAct、计划、重规划和最终收口行为。后续可注册工作流、并行或多 Agent 策略，而不修改现有计划型策略。
+
 计划重规划采用补丁协议：`revise_plan` 接收全部 `failed_steps`（含稳定 `step_id`），并返回 `replacements`。每个 replacement 指定 `replace_step_id` 和替代步骤列表；运行时仅替换这些失败或阻塞步骤，保留成功步骤及其输出，并按步骤指纹复用结果，避免重复调用。
 
 ## 上下文与执行轨迹

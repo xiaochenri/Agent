@@ -1,16 +1,18 @@
-package com.agent.javascope.agent;
+package com.agent.javascope.agent.routing;
 
+import com.agent.javascope.agent.runtime.RuntimeState;
+import com.agent.javascope.context.trace.ExecutionEventType;
+import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
+import com.agent.javascope.entity.execution.AgentToolCall;
+import com.agent.javascope.entity.routing.RouteDecision;
+import com.agent.javascope.json.AgentJsonCodecUtil;
 import com.agent.javascope.model.AgentChatModelClient;
 import com.agent.javascope.model.ModelCallException;
 import com.agent.javascope.model.ModelRequest;
 import com.agent.javascope.model.ModelResult;
-import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
-import com.agent.javascope.entity.execution.AgentToolCall;
-import com.agent.javascope.entity.routing.RouteDecision;
 import com.agent.javascope.prompt.AgentPromptProvider;
-import com.agent.javascope.json.AgentJsonCodecUtil;
-import com.agent.javascope.context.trace.ExecutionEventType;
 import com.fasterxml.jackson.databind.JsonNode;
+
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -19,7 +21,7 @@ import java.util.function.Consumer;
 /**
  * 负责输入前置路由：区分任务、闲聊和元问题，并处理非任务场景的直接回复。
  */
-class InputRouter {
+public class InputRouter {
 
     /** 构建路由 prompt 和直答 prompt。 */
     private final AgentPromptProvider promptProvider;
@@ -30,7 +32,7 @@ class InputRouter {
     /** 用于阻止直答分支误触发工具调用。 */
     private final AgentToolCallExtractor toolCallExtractor;
 
-    InputRouter(
+    public InputRouter(
             AgentPromptProvider promptProvider,
             AgentChatModelClient modelClient,
             AgentJsonCodecUtil json,
@@ -44,7 +46,7 @@ class InputRouter {
     /**
      * 调用模型完成意图路由，并把路由结果写入执行日志。
      */
-    RouteDecision route(String input, RuntimeState state, String systemInstruction) {
+    public RouteDecision route(String input, RuntimeState state, String systemInstruction) {
         String prompt = promptProvider.buildRoutePrompt(systemInstruction, input);
         state.trace.record(ExecutionEventType.ROUTE_MODEL_REQUESTED, Map.of("prompt", prompt), Map.of());
         Map<String, Object> raw = json.asMap(modelContent(modelClient.chat(new ModelRequest(prompt))));
@@ -52,7 +54,7 @@ class InputRouter {
         return handleRouteModelResponse(input, state, raw);
     }
 
-    RouteDecision routeStream(
+    public RouteDecision routeStream(
             String input, RuntimeState state, String systemInstruction, Consumer<String> deltaConsumer) {
         String prompt = promptProvider.buildRoutePrompt(systemInstruction, input);
         state.trace.record(ExecutionEventType.ROUTE_MODEL_REQUESTED, Map.of("prompt", prompt, "stream", true), Map.of());
@@ -91,7 +93,7 @@ class InputRouter {
     /**
      * 对 chat/meta 分支生成最终回复；如果模型仍返回工具调用，则记录风险并丢弃工具调用。
      */
-    Map<String, Object> buildDirectRouteFinalAnswer(
+    public Map<String, Object> buildDirectRouteFinalAnswer(
             String input, RouteDecision routeDecision, RuntimeState state, String systemInstruction) {
         String prompt = promptProvider.buildDirectReplyPrompt(
                 systemInstruction,
@@ -104,7 +106,7 @@ class InputRouter {
         return handleDirectReplyModelResponse(input, routeDecision, state, response);
     }
 
-    Map<String, Object> buildDirectRouteFinalAnswerStream(
+    public Map<String, Object> buildDirectRouteFinalAnswerStream(
             String input,
             RouteDecision routeDecision,
             RuntimeState state,

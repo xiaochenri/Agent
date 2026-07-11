@@ -1,19 +1,22 @@
-package com.agent.javascope.agent;
+package com.agent.javascope.agent.planning;
 
-import com.agent.javascope.runtime.AgentRuntimeProperties;
-import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
-import com.agent.javascope.contract.tool.AgentToolDefinition;
+import com.agent.javascope.agent.runtime.RuntimeState;
+import com.agent.javascope.agent.support.ToolExecutionResultMapper;
+import com.agent.javascope.context.trace.ExecutionEventType;
 import com.agent.javascope.contract.plan.FailedStepHistoryItem;
 import com.agent.javascope.contract.plan.PlanStepDefinition;
+import com.agent.javascope.contract.tool.AgentToolDefinition;
+import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
 import com.agent.javascope.entity.plan.PlanStepState;
+import com.agent.javascope.json.AgentJsonCodecUtil;
 import com.agent.javascope.plan.PlanLifecycleEvent;
 import com.agent.javascope.plan.PlanStepStatus;
+import com.agent.javascope.runtime.AgentRuntimeProperties;
 import com.agent.javascope.tool.runtime.AgentToolExecutor;
-import com.agent.javascope.tools.validation.StepValidatorTool;
 import com.agent.javascope.tool.runtime.ToolExecutionResult;
 import com.agent.javascope.tool.runtime.ToolInvocation;
-import com.agent.javascope.json.AgentJsonCodecUtil;
-import com.agent.javascope.context.trace.ExecutionEventType;
+import com.agent.javascope.tools.validation.StepValidatorTool;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -22,7 +25,7 @@ import java.util.Map;
 /**
  * 顺序执行当前计划，并负责步骤状态、步骤校验和失败重试控制。
  */
-class PlanExecutor {
+public class PlanExecutor {
 
     /** 读取 planMaxRetry 等运行时配置。 */
     private final AgentRuntimeProperties properties;
@@ -33,7 +36,7 @@ class PlanExecutor {
     /** 对单个计划步骤的实际输出进行语义校验。 */
     private final StepValidatorTool stepValidatorTool;
 
-    PlanExecutor(
+    public PlanExecutor(
             AgentRuntimeProperties properties,
             AgentToolExecutor toolExecutor,
             AgentJsonCodecUtil json,
@@ -47,7 +50,7 @@ class PlanExecutor {
     /**
      * 执行 state.planSteps 中尚未完成的步骤；失败时写入 validationFeedback 交给下一轮重规划。
      */
-    boolean execute(String input, int round, RuntimeState state) {
+    public boolean execute(String input, int round, RuntimeState state) {
         if (state.planSteps.isEmpty()) {
             state.riskFlags.add("plan_empty");
             state.validationFeedback = "计划为空，无法执行。请判断是否需要调用 revise_plan 重新生成计划。";

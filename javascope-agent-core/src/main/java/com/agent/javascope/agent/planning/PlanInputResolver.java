@@ -1,14 +1,15 @@
-package com.agent.javascope.agent;
+package com.agent.javascope.agent.planning;
 
 import com.agent.javascope.entity.plan.PlanStepState;
 import com.agent.javascope.plan.PlanStepStatus;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /** 解析计划步骤对前序成功步骤输出的引用，并把同名证据字段补入空入参。 */
-final class PlanInputResolver {
+public final class PlanInputResolver {
 
     private PlanInputResolver() {}
 
@@ -16,7 +17,7 @@ final class PlanInputResolver {
      * 支持 {@code {"$ref":"steps.1.data.price"}}、{@code previous.data.price} 和
      * {@code tools.market_quote.data.price} 三类引用；步骤序号从 1 开始。
      */
-    static Map<String, Object> resolve(Map<String, Object> rawInput, int stepIndex, List<PlanStepState> steps) {
+    public static Map<String, Object> resolve(Map<String, Object> rawInput, int stepIndex, List<PlanStepState> steps) {
         Object resolved = resolveValue(rawInput == null ? Map.of() : rawInput, stepIndex, steps);
         Map<String, Object> input = resolved instanceof Map<?, ?> map ? copyMap(map) : new LinkedHashMap<>();
         Map<String, Object> priorData = collectPriorData(stepIndex, steps);

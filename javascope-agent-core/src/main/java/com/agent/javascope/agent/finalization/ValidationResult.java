@@ -1,14 +1,15 @@
-package com.agent.javascope.agent;
+package com.agent.javascope.agent.finalization;
 
 import com.agent.javascope.verifier.VerifierCheck;
 import com.agent.javascope.verifier.VerifierEvidence;
 import com.agent.javascope.verifier.VerifierNextAction;
+
 import java.util.List;
 
 /**
  * 独立验证器对最终答案的结构化判定结果。
  */
-record ValidationResult(
+public record ValidationResult(
         /** 最终答案是否通过验证。 */
         boolean passed,
         /** 未通过时的原因列表。 */
@@ -27,7 +28,7 @@ record ValidationResult(
         VerifierNextAction nextAction) {
 
     /** 构造一个轻量结果，用于初始化或简单失败场景。 */
-    ValidationResult(boolean passed, List<String> reasons, boolean suggestReplan) {
+    public ValidationResult(boolean passed, List<String> reasons, boolean suggestReplan) {
         this(
                 passed,
                 reasons,

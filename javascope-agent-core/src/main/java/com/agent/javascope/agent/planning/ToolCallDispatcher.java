@@ -1,26 +1,23 @@
-package com.agent.javascope.agent;
+package com.agent.javascope.agent.planning;
 
-import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
-import com.agent.javascope.contract.tool.AgentToolDefinition;
-import com.agent.javascope.entity.execution.AgentToolCall;
-import com.agent.javascope.entity.plan.PlanRevisionRecord;
+import com.agent.javascope.agent.runtime.RuntimeState;
+import com.agent.javascope.agent.support.ToolExecutionResultMapper;
+import com.agent.javascope.context.trace.ExecutionEventType;
 import com.agent.javascope.contract.plan.PlanStepDefinition;
-import com.agent.javascope.entity.plan.PlanStepState;
-import com.agent.javascope.entity.plan.PlanStepView;
-import com.agent.javascope.entity.plan.PlanToolData;
-import com.agent.javascope.entity.plan.PlanStepFailure;
-import com.agent.javascope.entity.plan.PlanStepReplacement;
-import com.agent.javascope.entity.plan.RevisePlanRequest;
+import com.agent.javascope.contract.tool.AgentToolDefinition;
+import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
+import com.agent.javascope.entity.execution.AgentToolCall;
+import com.agent.javascope.entity.plan.*;
 import com.agent.javascope.entity.tool.ToolResultPayload;
+import com.agent.javascope.json.AgentJsonCodecUtil;
 import com.agent.javascope.plan.PlanLifecycleEvent;
 import com.agent.javascope.plan.PlanStepStatus;
 import com.agent.javascope.prompt.AgentPromptProvider;
+import com.agent.javascope.tool.annotation.ToolType;
 import com.agent.javascope.tool.runtime.AgentToolExecutor;
 import com.agent.javascope.tool.runtime.ToolExecutionResult;
 import com.agent.javascope.tool.runtime.ToolInvocation;
-import com.agent.javascope.json.AgentJsonCodecUtil;
-import com.agent.javascope.context.trace.ExecutionEventType;
-import com.agent.javascope.tool.annotation.ToolType;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,7 +26,7 @@ import java.util.Map;
 /**
  * 分发模型请求的工具调用，并把计划工具结果接入计划执行器。
  */
-class ToolCallDispatcher {
+public class ToolCallDispatcher {
 
     /** 用于澄清阶段生成约束提示。 */
     private final AgentPromptProvider promptProvider;
@@ -40,7 +37,7 @@ class ToolCallDispatcher {
     /** 计划创建/修订后立即执行当前计划。 */
     private final PlanExecutor planExecutor;
 
-    ToolCallDispatcher(
+    public ToolCallDispatcher(
             AgentPromptProvider promptProvider,
             AgentToolExecutor toolExecutor,
             AgentJsonCodecUtil json,
@@ -54,7 +51,7 @@ class ToolCallDispatcher {
     /**
      * 顺序执行本轮所有 tool_calls；计划类工具成功后会触发 PlanExecutor。
      */
-    ToolDispatchStatus execute(String input, int round, List<AgentToolCall> toolCalls, RuntimeState state) {
+    public ToolDispatchStatus execute(String input, int round, List<AgentToolCall> toolCalls, RuntimeState state) {
         for (AgentToolCall call : toolCalls) {
             String toolName = json.normalize(call.getName(), "");
             AgentToolDefinition definition = toolExecutor.getToolDefinition(toolName);

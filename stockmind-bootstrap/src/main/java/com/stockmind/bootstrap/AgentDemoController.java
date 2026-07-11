@@ -1,6 +1,6 @@
 package com.stockmind.bootstrap;
 
-import com.agent.javascope.agent.ReActAgent;
+import com.agent.javascope.agent.runtime.ReActAgent;
 import com.stockmind.bootstrap.memory.UserMemoryEntry;
 import com.stockmind.bootstrap.memory.UserMemoryService;
 import com.fasterxml.jackson.core.type.TypeReference;
