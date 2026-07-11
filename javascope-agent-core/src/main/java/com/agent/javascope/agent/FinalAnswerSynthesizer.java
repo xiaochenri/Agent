@@ -1,13 +1,13 @@
 package com.agent.javascope.agent;
 
-import com.agent.javascope.config.AgentRuntimeProperties;
-import com.agent.javascope.entity.AgentExecutionLogEntry;
-import com.agent.javascope.entity.AgentToolCall;
-import com.agent.javascope.entity.PlanStepDefinition;
-import com.agent.javascope.entity.PlanStepState;
-import com.agent.javascope.enums.PlanStepStatus;
-import com.agent.javascope.tools.StepValidatorTool;
-import com.agent.javascope.util.AgentJsonCodecUtil;
+import com.agent.javascope.runtime.AgentRuntimeProperties;
+import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
+import com.agent.javascope.entity.execution.AgentToolCall;
+import com.agent.javascope.contract.plan.PlanStepDefinition;
+import com.agent.javascope.entity.plan.PlanStepState;
+import com.agent.javascope.plan.PlanStepStatus;
+import com.agent.javascope.tools.validation.StepValidatorTool;
+import com.agent.javascope.json.AgentJsonCodecUtil;
 import com.agent.javascope.verifier.IndependentVerifierService;
 import com.agent.javascope.verifier.VerifierCheck;
 import com.agent.javascope.verifier.VerifierNextAction;

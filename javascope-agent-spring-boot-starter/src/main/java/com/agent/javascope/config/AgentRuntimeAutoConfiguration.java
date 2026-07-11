@@ -4,18 +4,35 @@ import com.agent.javascope.prompt.AgentBusinessPromptCustomizer;
 import com.agent.javascope.prompt.DefaultAgentPromptProvider;
 import com.agent.javascope.prompt.LayeredAgentPromptProvider;
 import com.agent.javascope.tools.ReflectiveAgentToolExecutor;
-import com.agent.javascope.chat.AgentChatModelClient;
-import com.agent.javascope.chat.OpenAiCompatibleAgentChatModelClient;
+import com.agent.javascope.tool.execution.DefaultAgentToolExecutor;
+import com.agent.javascope.tool.authorization.DefaultToolAuthorizationPolicy;
+import com.agent.javascope.tool.middleware.RetryToolMiddleware;
+import com.agent.javascope.tool.middleware.CacheToolMiddleware;
+import com.agent.javascope.tool.middleware.IdempotencyToolMiddleware;
+import com.agent.javascope.tool.middleware.RateLimitToolMiddleware;
+import com.agent.javascope.model.AgentChatModelClient;
+import com.agent.javascope.model.openai.OpenAiCompatibleAgentChatModelClient;
+import com.agent.javascope.runtime.AgentRuntimeProperties;
 import com.agent.javascope.prompt.AgentPromptProvider;
-import com.agent.javascope.tools.AgentToolExecutor;
-import com.agent.javascope.tools.ClarificationBusinessProvider;
-import com.agent.javascope.tools.ClarifyRequirementTool;
-import com.agent.javascope.tools.CreatePlanTool;
-import com.agent.javascope.tools.RevisePlanTool;
-import com.agent.javascope.tools.StepValidatorTool;
-import com.agent.javascope.util.AgentJsonCodecUtil;
+import com.agent.javascope.tool.runtime.AgentToolExecutor;
+import com.agent.javascope.tool.authorization.ToolAuthorizationPolicy;
+import com.agent.javascope.tool.invocation.ToolInvoker;
+import com.agent.javascope.tool.middleware.ToolMiddleware;
+import com.agent.javascope.tool.registry.ToolRegistry;
+import com.agent.javascope.tool.runtime.ClarificationBusinessProvider;
+import com.agent.javascope.tools.clarification.ClarifyRequirementTool;
+import com.agent.javascope.tools.planning.CreatePlanTool;
+import com.agent.javascope.tools.planning.RevisePlanTool;
+import com.agent.javascope.tools.validation.StepValidatorTool;
+import com.agent.javascope.json.AgentJsonCodecUtil;
 import com.agent.javascope.verifier.IndependentVerifierService;
 import com.agent.javascope.agent.ReActAgent;
+import com.agent.javascope.agent.DefaultPromptAssembler;
+import com.agent.javascope.agent.PromptAssembler;
+import com.agent.javascope.context.projection.ContextManager;
+import com.agent.javascope.context.trace.ExecutionLogStore;
+import com.agent.javascope.context.projection.InMemoryContextManager;
+import com.agent.javascope.context.trace.InMemoryExecutionLogStore;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -24,6 +41,7 @@ import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Primary;
+import org.springframework.core.annotation.Order;
 
 import java.util.List;
 
@@ -44,6 +62,24 @@ public class AgentRuntimeAutoConfiguration {
     }
 
     @Bean
+    @ConditionalOnMissingBean
+    public ExecutionLogStore executionLogStore() {
+        return new InMemoryExecutionLogStore();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public ContextManager contextManager() {
+        return new InMemoryContextManager();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public PromptAssembler promptAssembler(AgentJsonCodecUtil json) {
+        return new DefaultPromptAssembler(json);
+    }
+
+    @Bean
     @Primary
     public AgentPromptProvider agentPromptProvider(ObjectProvider<AgentBusinessPromptCustomizer> customizers) {
         List<AgentBusinessPromptCustomizer> orderedCustomizers = customizers.orderedStream().toList();
@@ -52,8 +88,70 @@ public class AgentRuntimeAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    public AgentToolExecutor agentToolExecutor() {
+    public ReflectiveAgentToolExecutor reflectiveToolAdapter() {
         return new ReflectiveAgentToolExecutor(applicationContext);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public ToolRegistry toolRegistry(ReflectiveAgentToolExecutor adapter) {
+        return adapter;
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public ToolInvoker toolInvoker(ReflectiveAgentToolExecutor adapter) {
+        return adapter;
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public ToolAuthorizationPolicy toolAuthorizationPolicy() {
+        return new DefaultToolAuthorizationPolicy();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(name = "retryToolMiddleware")
+    @Order(40)
+    public ToolMiddleware retryToolMiddleware() {
+        return new RetryToolMiddleware(1);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(name = "rateLimitToolMiddleware")
+    @Order(10)
+    public ToolMiddleware rateLimitToolMiddleware() {
+        return new RateLimitToolMiddleware(1_000);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(name = "idempotencyToolMiddleware")
+    @Order(20)
+    public ToolMiddleware idempotencyToolMiddleware() {
+        return new IdempotencyToolMiddleware();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(name = "cacheToolMiddleware")
+    @Order(30)
+    public ToolMiddleware cacheToolMiddleware() {
+        return new CacheToolMiddleware();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public AgentToolExecutor agentToolExecutor(
+            ToolRegistry registry,
+            ToolAuthorizationPolicy authorizationPolicy,
+            ObjectProvider<ToolMiddleware> middlewares,
+            ToolInvoker invoker,
+            AgentJsonCodecUtil json) {
+        return new DefaultAgentToolExecutor(
+                registry,
+                authorizationPolicy,
+                middlewares.orderedStream().toList(),
+                invoker,
+                json);
     }
 
     @Bean
@@ -125,7 +223,10 @@ public class AgentRuntimeAutoConfiguration {
             AgentChatModelClient modelClient,
             AgentJsonCodecUtil json,
             StepValidatorTool stepValidatorTool,
-            IndependentVerifierService independentVerifierService) {
+            IndependentVerifierService independentVerifierService,
+            ExecutionLogStore executionLogStore,
+            ContextManager contextManager,
+            PromptAssembler promptAssembler) {
         return new ReActAgent(
                 properties,
                 promptProvider,
@@ -133,7 +234,10 @@ public class AgentRuntimeAutoConfiguration {
                 modelClient,
                 json,
                 stepValidatorTool,
-                independentVerifierService);
+                independentVerifierService,
+                executionLogStore,
+                contextManager,
+                promptAssembler);
     }
 
     @Bean

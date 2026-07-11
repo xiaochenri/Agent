@@ -1,20 +1,23 @@
 package com.agent.javascope.agent;
 
-import com.agent.javascope.entity.AgentExecutionLogEntry;
-import com.agent.javascope.entity.AgentToolDefinition;
-import com.agent.javascope.entity.AgentToolCall;
-import com.agent.javascope.entity.PlanRevisionRecord;
-import com.agent.javascope.entity.PlanStepDefinition;
-import com.agent.javascope.entity.PlanStepState;
-import com.agent.javascope.entity.PlanStepView;
-import com.agent.javascope.entity.PlanToolData;
-import com.agent.javascope.entity.RevisePlanRequest;
-import com.agent.javascope.entity.ToolResultPayload;
-import com.agent.javascope.enums.PlanLifecycleEvent;
-import com.agent.javascope.enums.PlanStepStatus;
+import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
+import com.agent.javascope.contract.tool.AgentToolDefinition;
+import com.agent.javascope.entity.execution.AgentToolCall;
+import com.agent.javascope.entity.plan.PlanRevisionRecord;
+import com.agent.javascope.contract.plan.PlanStepDefinition;
+import com.agent.javascope.entity.plan.PlanStepState;
+import com.agent.javascope.entity.plan.PlanStepView;
+import com.agent.javascope.entity.plan.PlanToolData;
+import com.agent.javascope.entity.plan.RevisePlanRequest;
+import com.agent.javascope.entity.tool.ToolResultPayload;
+import com.agent.javascope.plan.PlanLifecycleEvent;
+import com.agent.javascope.plan.PlanStepStatus;
 import com.agent.javascope.prompt.AgentPromptProvider;
-import com.agent.javascope.tools.AgentToolExecutor;
-import com.agent.javascope.util.AgentJsonCodecUtil;
+import com.agent.javascope.tool.runtime.AgentToolExecutor;
+import com.agent.javascope.tool.runtime.ToolExecutionResult;
+import com.agent.javascope.tool.runtime.ToolInvocation;
+import com.agent.javascope.json.AgentJsonCodecUtil;
+import com.agent.javascope.context.trace.ExecutionEventType;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -65,8 +68,17 @@ class ToolCallDispatcher {
                 continue;
             }
             Map<String, Object> toolInput = enrichToolInput(toolName, call.getInput(), state);
-            String toolResult = toolExecutor.execute(toolName, toolInput, input);
-            Map<String, Object> resultJson = json.parseJson(toolResult);
+            state.trace.record(ExecutionEventType.TOOL_REQUESTED, Map.of(
+                    "round", round,
+                    "tool", toolName,
+                    "input", toolInput), Map.of());
+            ToolExecutionResult toolResult = toolExecutor.execute(
+                    new ToolInvocation(toolName, json.toTree(toolInput), input));
+            Map<String, Object> resultJson = json.asMap(json.toTree(toolResult));
+            state.trace.record(ExecutionEventType.TOOL_COMPLETED, Map.of(
+                    "round", round,
+                    "tool", toolName,
+                    "input", toolInput), resultJson);
             state.executionLog.add(buildToolLog(round, toolName, toolInput, resultJson));
             recordRevisionInputOutput(toolName, toolInput, resultJson, state);
             if (!isToolSuccess(resultJson)) {

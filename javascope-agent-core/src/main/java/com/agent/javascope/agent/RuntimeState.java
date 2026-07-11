@@ -1,19 +1,26 @@
 package com.agent.javascope.agent;
 
-import com.agent.javascope.entity.AgentExecutionLogEntry;
-import com.agent.javascope.entity.FailedStepHistoryItem;
-import com.agent.javascope.entity.PlanRevisionRecord;
-import com.agent.javascope.entity.PlanStepDefinition;
-import com.agent.javascope.entity.PlanStepState;
-import com.agent.javascope.entity.PlanToolData;
-import com.agent.javascope.entity.RouteDecision;
-import com.agent.javascope.tools.StepValidatorTool;
+import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
+import com.agent.javascope.contract.plan.FailedStepHistoryItem;
+import com.agent.javascope.entity.plan.PlanRevisionRecord;
+import com.agent.javascope.contract.plan.PlanStepDefinition;
+import com.agent.javascope.entity.plan.PlanStepState;
+import com.agent.javascope.entity.plan.PlanToolData;
+import com.agent.javascope.entity.routing.RouteDecision;
+import com.agent.javascope.tools.validation.StepValidatorTool;
+import com.agent.javascope.context.trace.ExecutionTrace;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 final class RuntimeState {
+    final ExecutionTrace trace;
+
+    RuntimeState(ExecutionTrace trace) {
+        this.trace = trace;
+    }
+
     // 全链路执行日志：记录每轮推理、工具调用与校验结果，最终原样返回给上层。
     final List<AgentExecutionLogEntry> executionLog = new ArrayList<>();
     // 计划修订轨迹：保存 create_plan/revise_plan 的多次尝试结果，便于追踪计划如何演进。

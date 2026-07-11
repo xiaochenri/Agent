@@ -1,7 +1,7 @@
 package com.agent.javascope.agent;
 
-import com.agent.javascope.entity.AgentToolCall;
-import com.agent.javascope.util.AgentJsonCodecUtil;
+import com.agent.javascope.entity.execution.AgentToolCall;
+import com.agent.javascope.json.AgentJsonCodecUtil;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;

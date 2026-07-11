@@ -1,10 +1,13 @@
 package com.agent.javascope.verifier;
 
-import com.agent.javascope.chat.AgentChatModelClient;
-import com.agent.javascope.entity.AgentExecutionLogEntry;
-import com.agent.javascope.entity.PlanStepDefinition;
+import com.agent.javascope.model.AgentChatModelClient;
+import com.agent.javascope.model.ModelCallException;
+import com.agent.javascope.model.ModelRequest;
+import com.agent.javascope.model.ModelResult;
+import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
+import com.agent.javascope.contract.plan.PlanStepDefinition;
 import com.agent.javascope.prompt.AgentPromptProvider;
-import com.agent.javascope.util.AgentJsonCodecUtil;
+import com.agent.javascope.json.AgentJsonCodecUtil;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -35,7 +38,7 @@ public class IndependentVerifierService {
 
         String prompt = promptProvider.buildIndependentValidationPrompt(
                 json.toJson(task), json.toJson(acceptance), json.toJson(executionLog), json.toJson(finalAnswer));
-        VerifierResult parsed = json.convert(json.parseJson(modelClient.chat(prompt)), VerifierResult.class);
+        VerifierResult parsed = json.convert(modelContent(modelClient.chat(new ModelRequest(prompt))), VerifierResult.class);
         return normalizeResult(parsed);
     }
 
@@ -51,6 +54,16 @@ public class IndependentVerifierService {
             acceptance.add(new AcceptanceCriterion("A4", "final_answer 不能为空", "blocking"));
         }
         return acceptance;
+    }
+
+    private Object modelContent(ModelResult result) {
+        if (result instanceof ModelResult.Success success) {
+            return success.content();
+        }
+        if (result instanceof ModelResult.Failure failure) {
+            throw new ModelCallException(failure.error());
+        }
+        throw new ModelCallException(null);
     }
 
     private VerifierResult normalizeResult(VerifierResult result) {

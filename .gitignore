@@ -4,3 +4,8 @@
 /.mvn-settings.xml
 /.idea/
 /.agentscope/
+/javascope-agent-core/target/
+/javascope-agent-model-openai/target/
+/javascope-agent-spi/target/
+/javascope-agent-spring-boot-starter/target/
+/javascope-agent-context/target/

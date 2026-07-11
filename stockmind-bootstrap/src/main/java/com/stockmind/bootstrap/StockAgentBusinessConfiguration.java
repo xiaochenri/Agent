@@ -1,7 +1,7 @@
 package com.stockmind.bootstrap;
 
 import com.agent.javascope.prompt.AgentBusinessPromptCustomizer;
-import com.agent.javascope.tools.ClarificationBusinessProvider;
+import com.agent.javascope.tool.runtime.ClarificationBusinessProvider;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;

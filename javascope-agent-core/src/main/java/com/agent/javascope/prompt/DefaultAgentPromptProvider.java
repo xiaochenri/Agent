@@ -1,7 +1,7 @@
 package com.agent.javascope.prompt;
 
-import com.agent.javascope.entity.FailedStepHistoryItem;
-import com.agent.javascope.entity.PlanStepDefinition;
+import com.agent.javascope.contract.plan.FailedStepHistoryItem;
+import com.agent.javascope.contract.plan.PlanStepDefinition;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;

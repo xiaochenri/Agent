@@ -1,12 +1,19 @@
 package com.agent.javascope.tools;
 
-import com.agent.javascope.entity.AgentToolDefinition;
-import com.agent.javascope.spi.AgentTool;
-import com.agent.javascope.spi.ToolField;
-import com.agent.javascope.spi.ToolVisibility;
+import com.agent.javascope.contract.tool.AgentToolDefinition;
+import com.agent.javascope.tool.runtime.ToolExecutionResult;
+import com.agent.javascope.tool.runtime.ToolExecutionStatus;
+import com.agent.javascope.tool.runtime.ToolInvocation;
+import com.agent.javascope.tool.registry.ToolRegistry;
+import com.agent.javascope.tool.invocation.ToolInvoker;
+import com.agent.javascope.tool.annotation.AgentTool;
+import com.agent.javascope.tool.annotation.ToolField;
+import com.agent.javascope.tool.annotation.ToolVisibility;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.NullNode;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -20,13 +27,17 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.aop.support.AopUtils;
 import org.springframework.context.ApplicationContext;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 
-public class ReflectiveAgentToolExecutor implements AgentToolExecutor, SmartInitializingSingleton {
+/** Spring 反射适配器：提供工具注册表和底层反射调用能力。 */
+public class ReflectiveAgentToolExecutor implements ToolRegistry, ToolInvoker, SmartInitializingSingleton {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final Logger LOG = LoggerFactory.getLogger(ReflectiveAgentToolExecutor.class);
 
     private final Map<String, ToolMethod> registry = new LinkedHashMap<>();
     private final Map<String, AgentToolDefinition> definitions = new LinkedHashMap<>();
@@ -39,11 +50,13 @@ public class ReflectiveAgentToolExecutor implements AgentToolExecutor, SmartInit
 
     @Override
     public void afterSingletonsInstantiated() {
+        LOG.debug("Initializing reflective agent tool registry after Spring singleton creation");
         ensureInitialized();
     }
 
     private synchronized void ensureInitialized() {
         if (initialized) {
+            LOG.debug("Reflective agent tool registry is already initialized, registeredToolCount={}", registry.size());
             return;
         }
         /*
@@ -51,9 +64,11 @@ public class ReflectiveAgentToolExecutor implements AgentToolExecutor, SmartInit
          * definitions 负责 prompt 暴露、入参校验和执行策略判断。
          */
         Map<String, Object> beans = applicationContext.getBeansOfType(Object.class);
+        LOG.debug("Scanning Spring beans for @AgentTool methods, beanCount={}", beans.size());
         for (Object bean : beans.values()) {
             Class<?> targetClass = AopUtils.getTargetClass(bean);
             if (targetClass == null) {
+                LOG.debug("Skipping bean without a resolvable target class, beanType={}", bean.getClass().getName());
                 continue;
             }
             for (Method method : targetClass.getDeclaredMethods()) {
@@ -62,27 +77,44 @@ public class ReflectiveAgentToolExecutor implements AgentToolExecutor, SmartInit
                     continue;
                 }
                 method.setAccessible(true);
+                if (registry.containsKey(annotation.name())) {
+                    LOG.warn("Replacing duplicate @AgentTool registration, tool={}, previousMethod={}, newMethod={}",
+                            annotation.name(), registry.get(annotation.name()).method().toGenericString(), method.toGenericString());
+                }
                 registry.put(annotation.name(), new ToolMethod(bean, method));
                 definitions.put(annotation.name(), buildDefinition(annotation, method));
+                LOG.debug("Registered reflective agent tool, tool={}, targetClass={}, method={}, parameterCount={}",
+                        annotation.name(), targetClass.getName(), method.getName(), method.getParameterCount());
             }
         }
         initialized = true;
+        LOG.info("Reflective agent tool registry initialized, registeredToolCount={}", registry.size());
     }
 
     @Override
-    public String execute(String tool, Map<String, Object> input, String rawInput) {
+    public ToolExecutionResult invoke(AgentToolDefinition ignored, ToolInvocation invocation) {
         ensureInitialized();
+        String tool = invocation == null ? "" : invocation.toolName();
+        Map<String, Object> input = invocation == null
+                ? Map.of()
+                : OBJECT_MAPPER.convertValue(invocation.input(), new TypeReference<Map<String, Object>>() {});
+        String rawInput = invocation == null ? "" : invocation.rawInput();
         ToolMethod toolMethod = registry.get(tool);
+        LOG.debug("Invoking reflective agent tool, tool={}, inputFieldCount={}, hasRawInput={}",
+                tool, input.size(), !rawInput.isBlank());
         if (toolMethod == null) {
+            LOG.debug("Reflective agent tool invocation rejected because the tool is not registered, tool={}", tool);
             return buildFail(tool, "tool not registered", false);
         }
         AgentToolDefinition definition = definitions.get(tool);
         if (definition == null || definition.getVisibility() == ToolVisibility.DISABLED) {
+            LOG.debug("Reflective agent tool invocation rejected because the tool is disabled, tool={}", tool);
             return buildFail(tool, "tool disabled", false);
         }
         // 执行前先按工具协议做最小校验，避免明显非法参数进入业务方法。
         List<String> validationErrors = validateInput(definition, input);
         if (!validationErrors.isEmpty()) {
+            LOG.debug("Reflective agent tool input validation failed, tool={}, errorCount={}", tool, validationErrors.size());
             return buildFail(tool, String.join("; ", validationErrors), true);
         }
         try {
@@ -95,14 +127,21 @@ public class ReflectiveAgentToolExecutor implements AgentToolExecutor, SmartInit
             } else {
                 result = method.invoke(toolMethod.bean());
             }
-            return result == null ? buildFail(tool, "tool result is null", false) : String.valueOf(result);
+            ToolExecutionResult executionResult = result == null
+                    ? buildFail(tool, "tool result is null", false)
+                    : toToolResult(tool, result);
+            LOG.debug("Reflective agent tool invocation completed, tool={}, status={}, retryable={}",
+                    tool, executionResult.status(), executionResult.retryable());
+            return executionResult;
         } catch (Exception e) {
+            LOG.warn("Reflective agent tool invocation failed, tool={}, exceptionType={}", tool, e.getClass().getSimpleName());
+            LOG.debug("Reflective agent tool invocation failure details, tool={}", tool, e);
             return buildFail(tool, "tool execute exception: " + e.getClass().getSimpleName(), true);
         }
     }
 
     @Override
-    public List<Map<String, Object>> listToolSchemas() {
+    public List<Map<String, Object>> listModelVisibleSchemas() {
         ensureInitialized();
         List<Map<String, Object>> schemas = new ArrayList<>();
         for (AgentToolDefinition definition : definitions.values()) {
@@ -113,22 +152,28 @@ public class ReflectiveAgentToolExecutor implements AgentToolExecutor, SmartInit
             }
             schemas.add(OBJECT_MAPPER.convertValue(definition, new TypeReference<Map<String, Object>>() {}));
         }
+        LOG.debug("Listed model-visible agent tool schemas, schemaCount={}", schemas.size());
         return schemas;
     }
 
     @Override
-    public List<AgentToolDefinition> listToolDefinitions() {
+    public List<AgentToolDefinition> listDefinitions() {
         ensureInitialized();
-        return new ArrayList<>(definitions.values());
+        List<AgentToolDefinition> result = new ArrayList<>(definitions.values());
+        LOG.debug("Listed agent tool definitions, definitionCount={}", result.size());
+        return result;
     }
 
     @Override
-    public AgentToolDefinition getToolDefinition(String name) {
+    public AgentToolDefinition findDefinition(String name) {
         ensureInitialized();
-        return definitions.get(name);
+        AgentToolDefinition definition = definitions.get(name);
+        LOG.debug("Looked up agent tool definition, tool={}, found={}", name, definition != null);
+        return definition;
     }
 
     private AgentToolDefinition buildDefinition(AgentTool annotation, Method method) {
+        LOG.debug("Building agent tool definition, tool={}, method={}", annotation.name(), method.toGenericString());
         // 注解显式 schema 优先；未配置时从强类型入参尽力推断。
         AgentToolDefinition definition = new AgentToolDefinition();
         definition.setName(annotation.name());
@@ -155,11 +200,13 @@ public class ReflectiveAgentToolExecutor implements AgentToolExecutor, SmartInit
 
     private Map<String, Object> resolveSchema(String schemaJson, Map<String, Object> fallback) {
         if (schemaJson == null || schemaJson.isBlank()) {
+            LOG.debug("Using inferred schema because no explicit tool schema was supplied");
             return fallback;
         }
         try {
             return OBJECT_MAPPER.readValue(schemaJson, new TypeReference<Map<String, Object>>() {});
         } catch (JsonProcessingException e) {
+            LOG.warn("Unable to parse explicit agent tool schema; using inferred schema instead, error={}", e.getOriginalMessage());
             Map<String, Object> invalid = new LinkedHashMap<>(fallback);
             invalid.put("schema_parse_error", e.getOriginalMessage());
             return invalid;
@@ -169,6 +216,7 @@ public class ReflectiveAgentToolExecutor implements AgentToolExecutor, SmartInit
     private List<Map<String, Object>> parseExamples(String[] examples) {
         List<Map<String, Object>> parsed = new ArrayList<>();
         if (examples == null) {
+            LOG.debug("No agent tool examples configured");
             return parsed;
         }
         for (String example : examples) {
@@ -178,21 +226,26 @@ public class ReflectiveAgentToolExecutor implements AgentToolExecutor, SmartInit
             try {
                 parsed.add(OBJECT_MAPPER.readValue(example, new TypeReference<Map<String, Object>>() {}));
             } catch (JsonProcessingException e) {
+                LOG.debug("Agent tool example is not JSON; retaining it as a description");
                 parsed.add(Map.of("description", example));
             }
         }
+        LOG.debug("Parsed agent tool examples, exampleCount={}", parsed.size());
         return parsed;
     }
 
     private Map<String, Object> inferInputSchema(Method method) {
         if (method.getParameterCount() == 0) {
+            LOG.debug("Inferred empty input schema for no-argument tool method, method={}", method.toGenericString());
             return objectSchema(Map.of(), List.of());
         }
         Class<?> inputType = method.getParameterTypes()[0];
         // Map 入参无法可靠推断字段，业务工具应优先在 @AgentTool.inputSchema 中声明。
         if (Map.class.isAssignableFrom(inputType)) {
+            LOG.debug("Cannot infer fields for Map input; using empty object schema, method={}", method.toGenericString());
             return objectSchema(Map.of(), List.of());
         }
+        LOG.debug("Inferring input schema from tool input type, method={}, inputType={}", method.toGenericString(), inputType.getName());
         return schemaForClass(inputType);
     }
 
@@ -216,7 +269,10 @@ public class ReflectiveAgentToolExecutor implements AgentToolExecutor, SmartInit
                 required.add(declaredField.getName());
             }
         }
-        return objectSchema(properties, required);
+        Map<String, Object> schema = objectSchema(properties, required);
+        LOG.debug("Generated input schema from class fields, type={}, propertyCount={}, requiredCount={}",
+                type.getName(), properties.size(), required.size());
+        return schema;
     }
 
     private Map<String, Object> schemaForType(Type type, ToolField field) {
@@ -334,16 +390,49 @@ public class ReflectiveAgentToolExecutor implements AgentToolExecutor, SmartInit
         return first == null || first.isBlank() ? second : first;
     }
 
-    private String buildFail(String toolName, String error, boolean retryable) {
-        return "{\"tool\":\"" + safe(toolName) + "\",\"status\":\"failed\",\"validation_passed\":false,"
-                + "\"validation_rules\":[],\"validation_errors\":[\"" + safe(error) + "\"],\"retryable\":" + retryable + ",\"data\":null}";
+    private ToolExecutionResult toToolResult(String fallbackToolName, Object result) {
+        if (result instanceof ToolExecutionResult typed) {
+            LOG.debug("Using typed tool execution result, tool={}, status={}", fallbackToolName, typed.status());
+            return typed;
+        }
+        try {
+            JsonNode node = OBJECT_MAPPER.readTree(String.valueOf(result));
+            if (node == null || !node.isObject()) {
+                return buildFail(fallbackToolName, "tool result must be a JSON object", false);
+            }
+            String toolName = node.path("tool").asText(fallbackToolName);
+            ToolExecutionStatus status = "success".equals(node.path("status").asText())
+                    ? ToolExecutionStatus.SUCCESS
+                    : ToolExecutionStatus.FAILED;
+            return new ToolExecutionResult(
+                    toolName,
+                    status,
+                    node.path("validation_passed").asBoolean(status == ToolExecutionStatus.SUCCESS),
+                    OBJECT_MAPPER.convertValue(node.path("validation_rules"), new TypeReference<List<String>>() {}),
+                    OBJECT_MAPPER.convertValue(node.path("validation_errors"), new TypeReference<List<String>>() {}),
+                    node.path("retryable").asBoolean(false),
+                    node.path("error_code").asText(""),
+                    node.has("data") ? node.get("data") : NullNode.getInstance(),
+                    node.has("metadata") ? node.get("metadata") : OBJECT_MAPPER.createObjectNode());
+        } catch (Exception e) {
+            LOG.debug("Unable to convert reflective tool result to typed result, tool={}, exceptionType={}",
+                    fallbackToolName, e.getClass().getSimpleName());
+            return buildFail(fallbackToolName, "tool result is not valid JSON", false);
+        }
     }
 
-    private String safe(String value) {
-        if (value == null) {
-            return "";
-        }
-        return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    private ToolExecutionResult buildFail(String toolName, String error, boolean retryable) {
+        LOG.debug("Building failed tool execution result, tool={}, retryable={}, error={}", toolName, retryable, error);
+        return new ToolExecutionResult(
+                toolName,
+                ToolExecutionStatus.FAILED,
+                false,
+                List.of(),
+                List.of(error),
+                retryable,
+                "tool_execution_failed",
+                NullNode.getInstance(),
+                OBJECT_MAPPER.createObjectNode());
     }
 
     private record ToolMethod(Object bean, Method method) {}

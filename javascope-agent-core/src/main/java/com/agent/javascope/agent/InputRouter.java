@@ -1,11 +1,16 @@
 package com.agent.javascope.agent;
 
-import com.agent.javascope.chat.AgentChatModelClient;
-import com.agent.javascope.entity.AgentExecutionLogEntry;
-import com.agent.javascope.entity.AgentToolCall;
-import com.agent.javascope.entity.RouteDecision;
+import com.agent.javascope.model.AgentChatModelClient;
+import com.agent.javascope.model.ModelCallException;
+import com.agent.javascope.model.ModelRequest;
+import com.agent.javascope.model.ModelResult;
+import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
+import com.agent.javascope.entity.execution.AgentToolCall;
+import com.agent.javascope.entity.routing.RouteDecision;
 import com.agent.javascope.prompt.AgentPromptProvider;
-import com.agent.javascope.util.AgentJsonCodecUtil;
+import com.agent.javascope.json.AgentJsonCodecUtil;
+import com.agent.javascope.context.trace.ExecutionEventType;
+import com.fasterxml.jackson.databind.JsonNode;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,14 +46,18 @@ class InputRouter {
      */
     RouteDecision route(String input, RuntimeState state, String systemInstruction) {
         String prompt = promptProvider.buildRoutePrompt(systemInstruction, input);
-        Map<String, Object> raw = json.parseJson(modelClient.chat(prompt));
+        state.trace.record(ExecutionEventType.ROUTE_MODEL_REQUESTED, Map.of("prompt", prompt), Map.of());
+        Map<String, Object> raw = json.asMap(modelContent(modelClient.chat(new ModelRequest(prompt))));
+        state.trace.record(ExecutionEventType.ROUTE_MODEL_RESPONDED, Map.of(), raw);
         return handleRouteModelResponse(input, state, raw);
     }
 
     RouteDecision routeStream(
             String input, RuntimeState state, String systemInstruction, Consumer<String> deltaConsumer) {
         String prompt = promptProvider.buildRoutePrompt(systemInstruction, input);
-        Map<String, Object> raw = json.parseJson(modelClient.chatStream(prompt, deltaConsumer));
+        state.trace.record(ExecutionEventType.ROUTE_MODEL_REQUESTED, Map.of("prompt", prompt, "stream", true), Map.of());
+        Map<String, Object> raw = json.asMap(modelContent(modelClient.chatStream(new ModelRequest(prompt), deltaConsumer)));
+        state.trace.record(ExecutionEventType.ROUTE_MODEL_RESPONDED, Map.of("stream", true), raw);
         return handleRouteModelResponse(input, state, raw);
     }
 
@@ -87,7 +96,9 @@ class InputRouter {
                 input,
                 routeDecision.getRoute(),
                 routeDecision.getReason());
-        Map<String, Object> response = json.parseJson(modelClient.chat(prompt));
+        state.trace.record(ExecutionEventType.ACTION_MODEL_REQUESTED, Map.of("prompt", prompt, "route", routeDecision.getRoute()), Map.of());
+        Map<String, Object> response = json.asMap(modelContent(modelClient.chat(new ModelRequest(prompt))));
+        state.trace.record(ExecutionEventType.ACTION_MODEL_RESPONDED, Map.of("route", routeDecision.getRoute()), response);
         return handleDirectReplyModelResponse(input, routeDecision, state, response);
     }
 
@@ -102,7 +113,9 @@ class InputRouter {
                 input,
                 routeDecision.getRoute(),
                 routeDecision.getReason());
-        Map<String, Object> response = json.parseJson(modelClient.chatStream(prompt, deltaConsumer));
+        state.trace.record(ExecutionEventType.ACTION_MODEL_REQUESTED, Map.of("prompt", prompt, "route", routeDecision.getRoute(), "stream", true), Map.of());
+        Map<String, Object> response = json.asMap(modelContent(modelClient.chatStream(new ModelRequest(prompt), deltaConsumer)));
+        state.trace.record(ExecutionEventType.ACTION_MODEL_RESPONDED, Map.of("route", routeDecision.getRoute(), "stream", true), response);
         return handleDirectReplyModelResponse(input, routeDecision, state, response);
     }
 
@@ -126,6 +139,16 @@ class InputRouter {
             return buildDirectRouteFinalAnswerFallback(routeDecision);
         }
         return finalAnswer;
+    }
+
+    private JsonNode modelContent(ModelResult result) {
+        if (result instanceof ModelResult.Success success) {
+            return success.content();
+        }
+        if (result instanceof ModelResult.Failure failure) {
+            throw new ModelCallException(failure.error());
+        }
+        throw new ModelCallException(null);
     }
 
     /**

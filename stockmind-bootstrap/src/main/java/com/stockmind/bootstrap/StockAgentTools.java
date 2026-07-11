@@ -1,9 +1,9 @@
 package com.stockmind.bootstrap;
 
-import com.agent.javascope.spi.AgentTool;
-import com.agent.javascope.spi.ToolDangerLevel;
-import com.agent.javascope.spi.ToolType;
-import com.agent.javascope.spi.ToolVisibility;
+import com.agent.javascope.tool.annotation.AgentTool;
+import com.agent.javascope.tool.annotation.ToolDangerLevel;
+import com.agent.javascope.tool.annotation.ToolType;
+import com.agent.javascope.tool.annotation.ToolVisibility;
 import com.stockmind.common.vector.DistanceMetric;
 import com.stockmind.common.vector.OceanBaseVectorStore;
 import com.stockmind.common.vector.TextVectorBuilder;

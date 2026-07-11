@@ -13,9 +13,12 @@
 ## 模块划分
 
 - `javascope-agent-spi`: Agent 扩展契约、工具注解与共享协议
+- `javascope-agent-context`: 独立的执行轨迹、上下文投影、预算和存储抽象
+  - `ExecutionTrace` / `ExecutionLogStore`: 记录并查询可回放的完整执行过程
+  - `InMemoryExecutionLogStore`: 调试阶段默认的进程内事件存储
+  - `ContextManager` / `WorkingContext`: 从完整轨迹中选择本轮模型需要的计划、历史、约束和证据索引
+  - `PromptBudget`: 限制每轮进入 Prompt 的字符、历史和证据数量
 - `javascope-agent-core`: Agent 核心运行时，不依赖 Spring 和具体股票业务
-- `javascope-agent-model-openai`: OpenAI Chat Completions 兼容模型适配器
-- `javascope-agent-spring-boot-starter`: Spring Boot 自动配置与反射工具适配器
   - `ReActAgent`: 主执行入口，负责路由、推理轮次、工具调用和最终回答
   - `InputRouter`: 将输入分为 `chat`、`meta`、`task`；非任务请求走直答分支
   - `ToolCallDispatcher` / `PlanExecutor`: 执行模型返回的工具调用和计划步骤
@@ -23,6 +26,8 @@
   - `ClarifyRequirementTool`: 结构化澄清缺失槽位
   - `FinalAnswerSynthesizer` / `IndependentVerifierService`: 最终答案兜底和可选独立校验
   - `AgentPromptProvider`、`AgentBusinessPromptCustomizer`、`AgentToolExecutor`、`ClarificationBusinessProvider`: 业务扩展 SPI
+- `javascope-agent-model-openai`: OpenAI Chat Completions 兼容模型适配器
+- `javascope-agent-spring-boot-starter`: Spring Boot 自动配置与反射工具适配器
 - `stockmind-common`: 公共基础能力
   - 文档文本抽取
   - 向量构建
@@ -48,7 +53,55 @@
    - 需要规划时先调用 `create_plan`
    - 步骤失败、依赖阻塞或校验建议重规划时调用 `revise_plan`
    - 缺少关键槽位时调用 `clarify_requirement`，并等待用户补充
-4. 最终返回结构化 JSON，包含计划视图、执行日志、最终答案、风险标记等信息。
+4. 每个关键动作会同时写入两类数据：
+   - 完整执行轨迹：用户输入、模型 Prompt/响应、工具请求/结果、最终答案等，供调试与回放
+   - 工作上下文：仅选取当前计划、最近历史、失败约束和证据索引，供下一轮模型决策
+5. 最终返回结构化 JSON，包含计划视图、兼容的执行日志、最终答案、风险标记和 `metadata.execution_id`。
+
+## 强类型运行时协议
+
+模型和工具调用不再以 JSON 字符串作为 Core 的边界协议：
+
+- `AgentChatModelClient`: `ModelRequest -> ModelResult`
+  - `ModelResult.Success`: JSON 树形式的结构化模型内容
+  - `ModelResult.Failure`: 包含错误码、消息、HTTP 状态码和是否可重试
+- `AgentToolExecutor`: `ToolInvocation -> ToolExecutionResult`
+  - 统一包含工具名、执行状态、校验结果、错误码、重试标记、数据和元数据
+
+OpenAI 客户端与反射工具执行器负责把外部 JSON 字符串转换为上述协议。业务工具当前仍可返回统一 JSON，兼容转换仅发生在 Spring starter 适配层。
+
+## 工具执行架构
+
+工具系统按职责拆分为四层：
+
+```text
+ToolRegistry -> ToolAuthorizationPolicy -> ToolMiddlewareChain -> ToolInvoker
+```
+
+- `ToolRegistry`：发现工具、查询定义并生成模型可见 schema。
+- `ToolAuthorizationPolicy`：依据风险等级与确认要求决定允许、拒绝或等待确认。
+- `ToolMiddleware`：默认包含固定窗口限流、写工具幂等、只读缓存和有限重试；完整调用过程仍由执行轨迹记录。
+- `ToolInvoker`：执行反射、HTTP、MCP 或其他底层适配器；当前默认实现为 Spring 反射调用。
+
+`DefaultAgentToolExecutor` 作为统一门面串联上述层次，Agent Core 不再依赖具体反射执行细节。
+
+## 上下文与执行轨迹
+
+完整执行轨迹和模型上下文是两条独立链路：
+
+```text
+Agent 执行
+  ├─ ExecutionTrace -> ExecutionLogStore（完整 Prompt、模型响应、工具结果）
+  └─ ContextManager -> WorkingContext -> PromptAssembler（仅本轮相关上下文）
+```
+
+这保证调试时可以通过 `metadata.execution_id` 查询完整过程，同时避免把完整历史和原始工具输出持续拼入模型 Prompt。
+
+默认实现使用内存存储，适合本地调试。可在业务侧替换以下 Bean：
+
+- `ExecutionLogStore`：接入 MySQL、Redis、Kafka 或 OpenTelemetry
+- `ContextManager`：接入摘要压缩、RAG、向量召回或领域化证据筛选
+- `PromptAssembler`：调整 Prompt 段落顺序、上下文裁剪与输出格式
 
 ## 业务扩展点
 
@@ -110,6 +163,9 @@ export AGENT_RUNTIME_FINAL_ANSWER_VALIDATION_ENABLED=false
 - `java.agent-runtime.final-answer-validation-enabled`: 是否开启最终答案独立校验
 - `java.agent-runtime.temperature`: 模型温度
 - `java.agent-runtime.timeout-seconds`: 模型请求超时
+- `java.agent-runtime.context-max-prompt-characters`: 单轮 Action Prompt 的字符预算，默认 `24000`
+- `java.agent-runtime.context-max-history-items`: 单轮选择的最近执行日志数量，默认 `6`
+- `java.agent-runtime.context-max-evidence-items`: 单轮选择的证据摘要数量，默认 `8`
 
 知识库向量配置：
 

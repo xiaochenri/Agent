@@ -1,19 +1,22 @@
 package com.agent.javascope.agent;
 
-import com.agent.javascope.chat.AgentChatModelClient;
-import com.agent.javascope.config.AgentRuntimeProperties;
-import com.agent.javascope.entity.AgentExecutionLogEntry;
-import com.agent.javascope.entity.AgentMessageSection;
-import com.agent.javascope.entity.AgentNextAction;
-import com.agent.javascope.entity.AgentResponse;
-import com.agent.javascope.entity.AgentResponseMetadata;
-import com.agent.javascope.entity.AgentRuntimeView;
-import com.agent.javascope.entity.AgentUserMessage;
-import com.agent.javascope.entity.PlanRevisionRecord;
-import com.agent.javascope.entity.PlanStepView;
-import com.agent.javascope.entity.PlanToolData;
+import com.agent.javascope.model.AgentChatModelClient;
+import com.agent.javascope.model.ModelCallException;
+import com.agent.javascope.model.ModelRequest;
+import com.agent.javascope.model.ModelResult;
+import com.agent.javascope.runtime.AgentRuntimeProperties;
+import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
+import com.agent.javascope.entity.response.AgentMessageSection;
+import com.agent.javascope.entity.response.AgentNextAction;
+import com.agent.javascope.entity.response.AgentResponse;
+import com.agent.javascope.entity.response.AgentResponseMetadata;
+import com.agent.javascope.entity.response.AgentRuntimeView;
+import com.agent.javascope.entity.response.AgentUserMessage;
+import com.agent.javascope.entity.plan.PlanRevisionRecord;
+import com.agent.javascope.entity.plan.PlanStepView;
+import com.agent.javascope.entity.plan.PlanToolData;
 import com.agent.javascope.prompt.AgentPromptProvider;
-import com.agent.javascope.tools.AgentToolExecutor;
+import com.agent.javascope.tool.runtime.AgentToolExecutor;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -21,7 +24,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 
-import com.agent.javascope.util.AgentJsonCodecUtil;
+import com.agent.javascope.json.AgentJsonCodecUtil;
+import com.fasterxml.jackson.databind.JsonNode;
 
 public abstract class Agent {
 
@@ -61,12 +65,22 @@ public abstract class Agent {
         }
     }
 
-    protected String chatModel(String prompt) {
-        return modelClient.chat(prompt);
+    protected JsonNode chatModel(String prompt) {
+        return modelContent(modelClient.chat(new ModelRequest(prompt)));
     }
 
-    protected String chatModelStream(String prompt, Consumer<String> deltaConsumer) {
-        return modelClient.chatStream(prompt, deltaConsumer);
+    protected JsonNode chatModelStream(String prompt, Consumer<String> deltaConsumer) {
+        return modelContent(modelClient.chatStream(new ModelRequest(prompt), deltaConsumer));
+    }
+
+    private JsonNode modelContent(ModelResult result) {
+        if (result instanceof ModelResult.Success success) {
+            return success.content();
+        }
+        if (result instanceof ModelResult.Failure failure) {
+            throw new ModelCallException(failure.error());
+        }
+        throw new ModelCallException(null);
     }
 
     protected AgentExecutionLogEntry buildReasoningLog(
@@ -90,6 +104,7 @@ public abstract class Agent {
     }
 
     protected String respondAsText(
+            String executionId,
             PlanToolData planResult,
             List<PlanStepView> plan,
             List<AgentExecutionLogEntry> executionLog,
@@ -99,6 +114,7 @@ public abstract class Agent {
             Map<String, Object> finalAnswer,
             List<String> riskFlags) {
         return json.toJson(buildResponsePayload(
+                executionId,
                 planResult,
                 plan,
                 executionLog,
@@ -110,6 +126,7 @@ public abstract class Agent {
     }
 
     protected String respondAsStream(
+            String executionId,
             PlanToolData planResult,
             List<PlanStepView> plan,
             List<AgentExecutionLogEntry> executionLog,
@@ -120,6 +137,7 @@ public abstract class Agent {
             List<String> riskFlags,
             Consumer<String> chunkConsumer) {
         Map<String, Object> payload = buildResponsePayload(
+                executionId,
                 planResult,
                 plan,
                 executionLog,
@@ -141,6 +159,7 @@ public abstract class Agent {
     }
 
     private Map<String, Object> buildResponsePayload(
+            String executionId,
             PlanToolData planResult,
             List<PlanStepView> plan,
             List<AgentExecutionLogEntry> executionLog,
@@ -169,6 +188,7 @@ public abstract class Agent {
         AgentResponseMetadata metadata = new AgentResponseMetadata();
         metadata.setProvider(provider);
         metadata.setModel(model);
+        metadata.setExecutionId(executionId);
         metadata.setCreatedAt(Instant.now().toString());
         agentResponse.setMetadata(metadata);
 

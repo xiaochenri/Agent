@@ -1,16 +1,19 @@
 package com.agent.javascope.agent;
 
-import com.agent.javascope.config.AgentRuntimeProperties;
-import com.agent.javascope.entity.AgentExecutionLogEntry;
-import com.agent.javascope.entity.AgentToolDefinition;
-import com.agent.javascope.entity.FailedStepHistoryItem;
-import com.agent.javascope.entity.PlanStepDefinition;
-import com.agent.javascope.entity.PlanStepState;
-import com.agent.javascope.enums.PlanLifecycleEvent;
-import com.agent.javascope.enums.PlanStepStatus;
-import com.agent.javascope.tools.AgentToolExecutor;
-import com.agent.javascope.tools.StepValidatorTool;
-import com.agent.javascope.util.AgentJsonCodecUtil;
+import com.agent.javascope.runtime.AgentRuntimeProperties;
+import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
+import com.agent.javascope.contract.tool.AgentToolDefinition;
+import com.agent.javascope.contract.plan.FailedStepHistoryItem;
+import com.agent.javascope.contract.plan.PlanStepDefinition;
+import com.agent.javascope.entity.plan.PlanStepState;
+import com.agent.javascope.plan.PlanLifecycleEvent;
+import com.agent.javascope.plan.PlanStepStatus;
+import com.agent.javascope.tool.runtime.AgentToolExecutor;
+import com.agent.javascope.tools.validation.StepValidatorTool;
+import com.agent.javascope.tool.runtime.ToolExecutionResult;
+import com.agent.javascope.tool.runtime.ToolInvocation;
+import com.agent.javascope.json.AgentJsonCodecUtil;
+import com.agent.javascope.context.trace.ExecutionEventType;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -98,8 +101,18 @@ class PlanExecutor {
                     "previous_step_id", step.getPreviousStepId() == null ? "" : step.getPreviousStepId(),
                     "next_step_id", step.getNextStepId() == null ? "" : step.getNextStepId()));
             Map<String, Object> toolInput = step.getInput();
-            String toolResult = toolExecutor.execute(toolName, toolInput, input);
-            Map<String, Object> resultJson = json.parseJson(toolResult);
+            state.trace.record(ExecutionEventType.TOOL_REQUESTED, Map.of(
+                    "round", round,
+                    "tool", toolName,
+                    "input", toolInput,
+                    "plan_step", step.getStepId()), Map.of());
+            ToolExecutionResult toolResult = toolExecutor.execute(
+                    new ToolInvocation(toolName, json.toTree(toolInput), input));
+            Map<String, Object> resultJson = json.asMap(json.toTree(toolResult));
+            state.trace.record(ExecutionEventType.TOOL_COMPLETED, Map.of(
+                    "round", round,
+                    "tool", toolName,
+                    "plan_step", step.getStepId()), resultJson);
             state.executionLog.add(buildToolLog(round, toolName, toolInput, resultJson));
             String expectedOutcome = step.getExpectedOutcome();
             if (!isToolSuccess(resultJson)) {

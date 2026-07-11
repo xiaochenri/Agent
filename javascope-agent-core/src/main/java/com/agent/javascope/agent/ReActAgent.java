@@ -1,23 +1,31 @@
 package com.agent.javascope.agent;
 
-import com.agent.javascope.chat.AgentChatModelClient;
-import com.agent.javascope.config.AgentRuntimeProperties;
-import com.agent.javascope.entity.AgentExecutionLogEntry;
-import com.agent.javascope.entity.AgentToolCall;
-import com.agent.javascope.entity.PlanStepDefinition;
-import com.agent.javascope.entity.PlanStepState;
-import com.agent.javascope.entity.PlanStepView;
-import com.agent.javascope.entity.RouteDecision;
+import com.agent.javascope.model.AgentChatModelClient;
+import com.agent.javascope.runtime.AgentRuntimeProperties;
+import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
+import com.agent.javascope.entity.execution.AgentToolCall;
+import com.agent.javascope.contract.plan.PlanStepDefinition;
+import com.agent.javascope.entity.plan.PlanStepState;
+import com.agent.javascope.entity.plan.PlanStepView;
+import com.agent.javascope.entity.routing.RouteDecision;
 import com.agent.javascope.prompt.AgentPromptProvider;
-import com.agent.javascope.tools.AgentToolExecutor;
-import com.agent.javascope.tools.StepValidatorTool;
+import com.agent.javascope.tool.runtime.AgentToolExecutor;
+import com.agent.javascope.tools.validation.StepValidatorTool;
 import com.agent.javascope.verifier.IndependentVerifierService;
+import com.agent.javascope.context.projection.ContextManager;
+import com.agent.javascope.context.projection.ContextRequest;
+import com.agent.javascope.context.trace.ExecutionEventType;
+import com.agent.javascope.context.trace.ExecutionLogStore;
+import com.agent.javascope.context.trace.ExecutionTrace;
+import com.agent.javascope.context.budget.PromptBudget;
+import com.agent.javascope.context.projection.WorkingContext;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.function.Consumer;
 
-import com.agent.javascope.util.AgentJsonCodecUtil;
+import com.agent.javascope.json.AgentJsonCodecUtil;
 import reactor.core.publisher.Flux;
 import reactor.core.scheduler.Schedulers;
 
@@ -27,6 +35,9 @@ public class ReActAgent extends Agent {
     private final InputRouter inputRouter;
     private final FinalAnswerSynthesizer finalAnswerSynthesizer;
     private final AgentToolCallExtractor toolCallExtractor;
+    private final ExecutionLogStore executionLogStore;
+    private final ContextManager contextManager;
+    private final PromptAssembler promptAssembler;
 
     public ReActAgent(
             AgentRuntimeProperties properties,
@@ -35,7 +46,10 @@ public class ReActAgent extends Agent {
             AgentChatModelClient modelClient,
             AgentJsonCodecUtil json,
             StepValidatorTool stepValidatorTool,
-            IndependentVerifierService independentVerifierService) {
+            IndependentVerifierService independentVerifierService,
+            ExecutionLogStore executionLogStore,
+            ContextManager contextManager,
+            PromptAssembler promptAssembler) {
         super(properties, promptProvider, toolExecutor, modelClient, json);
         this.toolCallExtractor = new AgentToolCallExtractor(json);
         this.inputRouter = new InputRouter(promptProvider, modelClient, json, toolCallExtractor);
@@ -43,11 +57,16 @@ public class ReActAgent extends Agent {
                 new FinalAnswerSynthesizer(properties, json, independentVerifierService, toolCallExtractor);
         PlanExecutor planExecutor = new PlanExecutor(properties, toolExecutor, json, stepValidatorTool);
         this.toolCallDispatcher = new ToolCallDispatcher(promptProvider, toolExecutor, json, planExecutor);
+        this.executionLogStore = executionLogStore;
+        this.contextManager = contextManager;
+        this.promptAssembler = promptAssembler;
     }
 
     public String call(String input, String sessionId, String userId) {
-        RuntimeState state = execute(input);
+        RuntimeState state = execute(input, sessionId, userId);
+        completeTrace(state);
         return respondAsText(
+                state.trace.executionId(),
                 state.latestPlanResult,
                 buildPlanView(state),
                 state.executionLog,
@@ -59,8 +78,10 @@ public class ReActAgent extends Agent {
     }
 
     public String callStream(String input, String sessionId, String userId, Consumer<String> chunkConsumer) {
-        RuntimeState state = execute(input);
+        RuntimeState state = execute(input, sessionId, userId);
+        completeTrace(state);
         return respondAsStream(
+                state.trace.executionId(),
                 state.latestPlanResult,
                 buildPlanView(state),
                 state.executionLog,
@@ -74,9 +95,11 @@ public class ReActAgent extends Agent {
 
     public String callWithModelStream(
             String input, String sessionId, String userId, Consumer<Map<String, Object>> eventConsumer) {
-        RuntimeState state = execute(input, eventConsumer, true);
+        RuntimeState state = execute(input, sessionId, userId, eventConsumer, true);
+        completeTrace(state);
         emitStreamEvent(eventConsumer, "process", "Agent 执行完成，正在整理最终回答");
         return respondAsText(
+                state.trace.executionId(),
                 state.latestPlanResult,
                 buildPlanView(state),
                 state.executionLog,
@@ -107,13 +130,23 @@ public class ReActAgent extends Agent {
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    private RuntimeState execute(String input) {
-        return execute(input, null, false);
+    private RuntimeState execute(String input, String sessionId, String userId) {
+        return execute(input, sessionId, userId, null, false);
     }
 
-    private RuntimeState execute(String input, Consumer<Map<String, Object>> eventConsumer, boolean useModelStream) {
+    private RuntimeState execute(
+            String input,
+            String sessionId,
+            String userId,
+            Consumer<Map<String, Object>> eventConsumer,
+            boolean useModelStream) {
         ensureAgentInitialized();
-        RuntimeState state = new RuntimeState();
+        RuntimeState state = new RuntimeState(new ExecutionTrace(
+                UUID.randomUUID().toString(), executionLogStore, json));
+        state.trace.record(ExecutionEventType.USER_INPUT_RECEIVED, Map.of(
+                "session_id", sessionId == null ? "" : sessionId,
+                "user_id", userId == null ? "" : userId,
+                "input", input == null ? "" : input), Map.of());
         emitStreamEvent(eventConsumer, "process", "正在识别本轮输入类型");
         RouteDecision routeDecision = useModelStream
                 ? inputRouter.routeStream(
@@ -190,25 +223,50 @@ public class ReActAgent extends Agent {
         if (!hint.isEmpty()) {
             state.ephemeralMemory.add(hint);
         }
-        String memoryJson = json.toJson(buildReasoningMemory(state.executionLog, state.ephemeralMemory));
+        WorkingContext context = contextManager.project(new ContextRequest(
+                json.toTree(state.latestPlan),
+                json.toTree(state.executionLog),
+                json.toTree(state.ephemeralMemory),
+                state.validationFeedback,
+                json.toTree(state.riskFlags)), promptBudget());
         ensureAgentInitialized();
-        String prompt = promptProvider.buildActionPrompt(
+        String prompt = promptAssembler.assembleActionPrompt(
+                promptProvider,
                 systemInstruction,
                 input,
-                memoryJson,
-                toolSchemasJson,
-                json.toJson(state.latestPlan),
-                json.toJson(state.executionLog),
-                json.normalize(state.validationFeedback, "无"));
-        String rawResponse = useModelStream
+                toolSchemas,
+                context,
+                promptBudget());
+        state.trace.record(ExecutionEventType.ACTION_MODEL_REQUESTED, Map.of(
+                "round", round,
+                "prompt", prompt,
+                "working_context", context), Map.of());
+        var rawResponse = useModelStream
                 ? chatModelStream(prompt, buildModelProgressConsumer(eventConsumer, "第 " + round + " 轮模型正在流式返回"))
                 : chatModel(prompt);
-        Map<String, Object> response = json.parseJson(rawResponse);
+        Map<String, Object> response = json.asMap(rawResponse);
+        state.trace.record(ExecutionEventType.ACTION_MODEL_RESPONDED, Map.of("round", round), response);
         state.executionLog.add(buildReasoningLog(input, round, state.validationFeedback, response));
         state.lastValidationFeedback = state.validationFeedback;
         state.validationFeedback = "";
         state.ephemeralMemory.clear();
         return response;
+    }
+
+    private PromptBudget promptBudget() {
+        return new PromptBudget(
+                properties.getContextMaxPromptCharacters(),
+                properties.getContextMaxHistoryItems(),
+                properties.getContextMaxEvidenceItems());
+    }
+
+    private void completeTrace(RuntimeState state) {
+        state.trace.record(ExecutionEventType.FINAL_ANSWER_GENERATED, Map.of(), state.lastFinalAnswer);
+        state.trace.record(ExecutionEventType.EXECUTION_COMPLETED, Map.of(
+                "blocked_reason", state.blockedReason,
+                "risk_flags", state.riskFlags), Map.of(
+                "execution_log_size", state.executionLog.size(),
+                "trace_event_size", state.trace.events().size()));
     }
 
     private Consumer<String> buildModelProgressConsumer(
