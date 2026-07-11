@@ -9,6 +9,8 @@ import com.agent.javascope.contract.tool.AgentToolDefinition;
 import com.agent.javascope.contract.plan.FailedStepHistoryItem;
 import com.agent.javascope.contract.plan.PlanStepDefinition;
 import com.agent.javascope.entity.plan.PlanToolData;
+import com.agent.javascope.entity.plan.PlanStepFailure;
+import com.agent.javascope.entity.plan.PlanStepReplacement;
 import com.agent.javascope.entity.plan.RevisePlanRequest;
 import com.agent.javascope.entity.tool.ToolResultPayload;
 import com.agent.javascope.prompt.AgentPromptProvider;
@@ -65,6 +67,7 @@ public class RevisePlanTool {
                         "current_plan": {"type": "array", "description": "当前计划步骤数组。"},
                         "failed_step_index": {"type": "integer", "description": "失败步骤索引。"},
                         "failed_step": {"type": "object", "description": "失败步骤定义。"},
+                        "failed_steps": {"type": "array", "description": "全部失败或阻塞步骤，含 step_id。"},
                         "failure_context": {"type": "object", "description": "失败工具输出和校验上下文。"}
                       },
                       "required": []
@@ -83,6 +86,16 @@ public class RevisePlanTool {
         List<String> completedStepFingerprints = request.getCompletedStepFingerprints();
         List<String> failedStepFingerprints = request.getFailedStepFingerprints();
         List<FailedStepHistoryItem> failedStepHistory = request.getFailedStepHistory();
+        List<PlanStepFailure> failedSteps = request.getFailedSteps();
+        if (failedSteps.isEmpty() && !failedStep.getStepId().isBlank()) {
+            PlanStepFailure fallback = new PlanStepFailure();
+            fallback.setStepId(failedStep.getStepId());
+            fallback.setStepIndex(failedStepIndex);
+            fallback.setStep(failedStep);
+            fallback.setActualOutput(failureContext);
+            fallback.setReason(reason);
+            failedSteps = List.of(fallback);
+        }
 
         String lastError = "计划修正失败";
         PlanToolData latest = new PlanToolData();
@@ -94,6 +107,7 @@ public class RevisePlanTool {
                     failedStepIndex,
                     failedStep,
                     failureContext,
+                    failedSteps.stream().map(item -> json.asMap(json.toTree(item))).toList(),
                     completedStepFingerprints,
                     failedStepFingerprints,
                     failedStepHistory,
@@ -101,20 +115,9 @@ public class RevisePlanTool {
                     lastError,
                     json.toJson(toolExecutor.listToolSchemas()));
             PlanToolData candidate = json.convert(modelContent(agentChatModelClient.chat(new ModelRequest(prompt))), PlanToolData.class);
-            List<PlanStepDefinition> plan = candidate.getPlan();
-            List<String> errors = validatePlanStructure(plan);
-            String candidateFingerprint = fingerprintPlan(plan);
-            if (!currentPlanFingerprint.isEmpty() && currentPlanFingerprint.equals(candidateFingerprint)) {
-                errors.add("新计划与当前计划重复，必须调整步骤、工具或入参");
-            }
-            if (!previousPlanFingerprint.isEmpty() && previousPlanFingerprint.equals(candidateFingerprint)) {
-                errors.add("新计划与上一轮失败计划重复，必须生成不同的工具入参组合");
-            }
-            errors.addAll(validateNoPlanningTools(plan));
-            errors.addAll(validateNoCompletedStepReuse(plan, completedStepFingerprints));
-            errors.addAll(validateNoFailedStepReuse(plan, failedStepFingerprints));
-
-            latest = new PlanToolData(candidate.getTaskUnderstanding(), plan);
+            List<PlanStepReplacement> replacements = candidate.getReplacements();
+            List<String> errors = validateReplacements(replacements, failedSteps, completedStepFingerprints, failedStepFingerprints);
+            latest = candidate;
             if (errors.isEmpty()) {
                 return json.toJson(ToolResultPayload.success("revise_plan", latest));
             }
@@ -123,11 +126,35 @@ public class RevisePlanTool {
         return json.toJson(ToolResultPayload.failed("revise_plan", List.of(lastError), latest));
     }
 
+    private List<String> validateReplacements(
+            List<PlanStepReplacement> replacements,
+            List<PlanStepFailure> failedSteps,
+            List<String> completedStepFingerprints,
+            List<String> failedStepFingerprints) {
+        List<String> errors = new ArrayList<>();
+        Set<String> expectedTargets = new HashSet<>();
+        for (PlanStepFailure failed : failedSteps) {
+            if (!normalize(failed.getStepId(), "").isEmpty()) expectedTargets.add(failed.getStepId());
+        }
+        Set<String> actualTargets = new HashSet<>();
+        for (PlanStepReplacement replacement : replacements) {
+            String target = normalize(replacement.getReplaceStepId(), "");
+            if (target.isEmpty() || !expectedTargets.contains(target) || !actualTargets.add(target)) {
+                errors.add("replacement target 非法或重复: " + target);
+                continue;
+            }
+            List<PlanStepDefinition> steps = replacement.getSteps();
+            errors.addAll(validatePlanStructure(steps));
+            errors.addAll(validateNoPlanningTools(steps));
+            errors.addAll(validateNoCompletedStepReuse(steps, completedStepFingerprints));
+            errors.addAll(validateNoFailedStepReuse(steps, failedStepFingerprints));
+        }
+        if (!actualTargets.equals(expectedTargets)) errors.add("replacements 必须覆盖所有失败步骤");
+        return errors;
+    }
+
     private List<String> validatePlanStructure(List<PlanStepDefinition> plan) {
         List<String> errors = new ArrayList<>();
-        if (plan.size() > 3) {
-            errors.add("plan 步数不能超过3");
-        }
         for (int i = 0; i < plan.size(); i++) {
             PlanStepDefinition step = plan.get(i);
             if (normalize(step.getName(), "").isEmpty()) {

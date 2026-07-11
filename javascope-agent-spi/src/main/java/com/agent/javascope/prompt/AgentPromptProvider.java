@@ -14,6 +14,7 @@ public interface AgentPromptProvider {
     String buildActionPrompt(
             String systemPrompt,
             String input,
+            String executionMode,
             String memoryJson,
             String toolsJson,
             String latestPlanJson,
@@ -29,6 +30,7 @@ public interface AgentPromptProvider {
             int failedStepIndex,
             PlanStepDefinition failedStep,
             Map<String, Object> failureContext,
+            List<Map<String, Object>> failedSteps,
             List<String> completedStepFingerprints,
             List<String> failedStepFingerprints,
             List<FailedStepHistoryItem> failedStepHistory,

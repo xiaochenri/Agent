@@ -37,13 +37,14 @@ public class LayeredAgentPromptProvider implements AgentPromptProvider {
     public String buildActionPrompt(
             String systemPrompt,
             String input,
+            String executionMode,
             String memoryJson,
             String toolsJson,
             String latestPlanJson,
             String executionLogJson,
             String validationFeedback) {
         String prompt = baseProvider.buildActionPrompt(
-                systemPrompt, input, memoryJson, toolsJson, latestPlanJson, executionLogJson, validationFeedback);
+                systemPrompt, input, executionMode, memoryJson, toolsJson, latestPlanJson, executionLogJson, validationFeedback);
         for (AgentBusinessPromptCustomizer customizer : customizers) {
             prompt = customizer.customizeActionPrompt(prompt);
         }
@@ -67,6 +68,7 @@ public class LayeredAgentPromptProvider implements AgentPromptProvider {
             int failedStepIndex,
             PlanStepDefinition failedStep,
             Map<String, Object> failureContext,
+            List<Map<String, Object>> failedSteps,
             List<String> completedStepFingerprints,
             List<String> failedStepFingerprints,
             List<FailedStepHistoryItem> failedStepHistory,
@@ -80,6 +82,7 @@ public class LayeredAgentPromptProvider implements AgentPromptProvider {
                 failedStepIndex,
                 failedStep,
                 failureContext,
+                failedSteps,
                 completedStepFingerprints,
                 failedStepFingerprints,
                 failedStepHistory,

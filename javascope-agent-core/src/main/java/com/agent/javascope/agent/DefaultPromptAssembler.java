@@ -21,12 +21,14 @@ public class DefaultPromptAssembler implements PromptAssembler {
             AgentPromptProvider promptProvider,
             String systemInstruction,
             String input,
+            String executionMode,
             List<Map<String, Object>> toolSchemas,
             WorkingContext context,
             PromptBudget budget) {
         String prompt = promptProvider.buildActionPrompt(
                 systemInstruction,
                 input,
+                executionMode,
                 json.toJson(context.evidenceSummaries()),
                 json.toJson(toolSchemas),
                 json.toJson(context.currentPlan()),

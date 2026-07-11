@@ -63,6 +63,7 @@ class InputRouter {
 
     private RouteDecision handleRouteModelResponse(String input, RuntimeState state, Map<String, Object> raw) {
         String route = normalizeRoute(raw.get("route"));
+        String executionMode = normalizeExecutionMode(route, raw.get("execution_mode"));
         double confidence = normalizeConfidence(raw.get("confidence"));
         String reason = json.normalize(raw.get("reason") == null ? "" : String.valueOf(raw.get("reason")), "");
         String rawRoute = raw.get("route") == null ? "" : String.valueOf(raw.get("route"));
@@ -72,9 +73,10 @@ class InputRouter {
         if (confidence < 0.5) {
             state.riskFlags.add("route_low_confidence");
         }
-        RouteDecision decision = new RouteDecision(route, confidence, reason);
+        RouteDecision decision = new RouteDecision(route, executionMode, confidence, reason);
         Map<String, Object> routeOutput = new LinkedHashMap<>();
         routeOutput.put("route", route);
+        routeOutput.put("execution_mode", executionMode);
         routeOutput.put("confidence", confidence);
         routeOutput.put("reason", reason);
         state.executionLog.add(new AgentExecutionLogEntry(
@@ -180,6 +182,16 @@ class InputRouter {
             return normalized;
         }
         return "task";
+    }
+
+    /** 非任务不进入执行链；任务若未明确为 direct，则保守要求先规划。 */
+    private String normalizeExecutionMode(String route, Object executionModeObj) {
+        if (!"task".equals(route)) {
+            return "none";
+        }
+        String normalized = json.normalize(
+                executionModeObj == null ? "" : String.valueOf(executionModeObj), "planned").toLowerCase();
+        return "direct".equals(normalized) ? "direct" : "planned";
     }
 
     /**

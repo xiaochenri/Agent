@@ -6,6 +6,9 @@ import java.util.Map;
 
 public class PlanStepDefinition {
 
+    /** 运行时分配的稳定步骤标识；创建计划时可为空，重规划补丁必须使用既有标识。 */
+    @JsonProperty("step_id")
+    private String stepId = "";
     /** 步骤名称，用于展示和执行日志定位。 */
     private String name = "";
     /** 步骤说明，用于描述该步骤要完成的具体动作。 */
@@ -45,6 +48,14 @@ public class PlanStepDefinition {
 
     public String getName() {
         return name;
+    }
+
+    public String getStepId() {
+        return stepId;
+    }
+
+    public void setStepId(String stepId) {
+        this.stepId = stepId == null ? "" : stepId;
     }
 
     public void setName(String name) {

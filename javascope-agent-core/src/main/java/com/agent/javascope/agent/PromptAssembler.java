@@ -12,6 +12,7 @@ public interface PromptAssembler {
             AgentPromptProvider promptProvider,
             String systemInstruction,
             String input,
+            String executionMode,
             List<Map<String, Object>> toolSchemas,
             WorkingContext context,
             PromptBudget budget);

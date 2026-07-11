@@ -24,6 +24,9 @@ public class RevisePlanRequest {
     /** 当前失败步骤详情。 */
     @JsonProperty("failed_step")
     private PlanStepDefinition failedStep = new PlanStepDefinition();
+    /** 本轮全部失败或阻塞步骤，供批量补丁式重规划使用。 */
+    @JsonProperty("failed_steps")
+    private List<PlanStepFailure> failedSteps = new ArrayList<>();
     /** 最近一次步骤校验或工具失败上下文。 */
     @JsonProperty("failure_context")
     private Map<String, Object> failureContext = new LinkedHashMap<>();
@@ -78,6 +81,14 @@ public class RevisePlanRequest {
 
     public void setFailedStep(PlanStepDefinition failedStep) {
         this.failedStep = failedStep == null ? new PlanStepDefinition() : failedStep;
+    }
+
+    public List<PlanStepFailure> getFailedSteps() {
+        return failedSteps == null ? new ArrayList<>() : failedSteps;
+    }
+
+    public void setFailedSteps(List<PlanStepFailure> failedSteps) {
+        this.failedSteps = failedSteps == null ? new ArrayList<>() : failedSteps;
     }
 
     public Map<String, Object> getFailureContext() {

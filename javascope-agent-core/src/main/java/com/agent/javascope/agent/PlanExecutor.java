@@ -53,6 +53,7 @@ class PlanExecutor {
             state.validationFeedback = "计划为空，无法执行。请判断是否需要调用 revise_plan 重新生成计划。";
             return false;
         }
+        List<String> failureReasons = new ArrayList<>();
         for (int i = 0; i < state.planSteps.size(); i++) {
             PlanStepState step = state.planSteps.get(i);
             if (step.getStatus() == PlanStepStatus.COMPLETED) {
@@ -67,30 +68,30 @@ class PlanExecutor {
             if (step.isDependsOnPrevious()
                     && step.getPreviousStepId() != null
                     && !isPreviousStepCompleted(state.planSteps, step.getPreviousStepId())) {
-                state.riskFlags.add("plan_dependency_blocked_" + step.getStepId());
-                state.validationFeedback = "前置步骤未完成，不能继续执行: " + step.getStepId()
-                        + "。请基于执行日志判断下一步，必要时调用 revise_plan。";
-                return false;
+                String reason = "前置步骤未完成，不能继续执行: " + step.getStepId();
+                recordPreExecutionFailure(state, i, step, reason, "plan_dependency_blocked_" + step.getStepId());
+                failureReasons.add(reason);
+                continue;
             }
             String toolName = step.getToolName();
             if (toolName.isEmpty()) {
-                state.riskFlags.add("plan_step_tool_missing_" + i);
-                state.validationFeedback = "计划步骤缺少 tool: step=" + i
-                        + "。请基于当前计划判断是否调用 revise_plan 修正计划。";
-                return false;
+                String reason = "计划步骤缺少 tool: step=" + i;
+                recordPreExecutionFailure(state, i, step, reason, "plan_step_tool_missing_" + i);
+                failureReasons.add(reason);
+                continue;
             }
             AgentToolDefinition toolDefinition = toolExecutor.getToolDefinition(toolName);
             if (toolDefinition == null) {
-                state.riskFlags.add("plan_step_tool_unknown_" + i);
-                state.validationFeedback = "计划步骤使用了未注册工具: " + toolName
-                        + "。请调用 revise_plan，改用可用工具。";
-                return false;
+                String reason = "计划步骤使用了未注册工具: " + toolName;
+                recordPreExecutionFailure(state, i, step, reason, "plan_step_tool_unknown_" + i);
+                failureReasons.add(reason);
+                continue;
             }
             if (!toolDefinition.isAllowedInPlanStep()) {
-                state.riskFlags.add("plan_step_tool_not_allowed_" + toolName);
-                state.validationFeedback = "工具 " + toolName
-                        + " 不允许作为计划执行步骤。请调用 revise_plan，改用业务执行工具。";
-                return false;
+                String reason = "工具 " + toolName + " 不允许作为计划执行步骤";
+                recordPreExecutionFailure(state, i, step, reason, "plan_step_tool_not_allowed_" + toolName);
+                failureReasons.add(reason);
+                continue;
             }
             step.setStatus(PlanStepStatus.IN_PROGRESS);
             state.planLifecycle.add(Map.of(
@@ -100,7 +101,7 @@ class PlanExecutor {
                     "depends_on_previous", step.isDependsOnPrevious(),
                     "previous_step_id", step.getPreviousStepId() == null ? "" : step.getPreviousStepId(),
                     "next_step_id", step.getNextStepId() == null ? "" : step.getNextStepId()));
-            Map<String, Object> toolInput = step.getInput();
+            Map<String, Object> toolInput = PlanInputResolver.resolve(step.getInput(), i, state.planSteps);
             state.trace.record(ExecutionEventType.TOOL_REQUESTED, Map.of(
                     "round", round,
                     "tool", toolName,
@@ -108,14 +109,14 @@ class PlanExecutor {
                     "plan_step", step.getStepId()), Map.of());
             ToolExecutionResult toolResult = toolExecutor.execute(
                     new ToolInvocation(toolName, json.toTree(toolInput), input));
-            Map<String, Object> resultJson = json.asMap(json.toTree(toolResult));
+            Map<String, Object> resultJson = ToolExecutionResultMapper.toCompatibilityMap(toolResult, json);
             state.trace.record(ExecutionEventType.TOOL_COMPLETED, Map.of(
                     "round", round,
                     "tool", toolName,
                     "plan_step", step.getStepId()), resultJson);
             state.executionLog.add(buildToolLog(round, toolName, toolInput, resultJson));
             String expectedOutcome = step.getExpectedOutcome();
-            if (!isToolSuccess(resultJson)) {
+            if (!toolResult.isSuccess()) {
                 step.setStatus(PlanStepStatus.FAILED);
                 step.setActualOutput(resultJson);
                 rememberFailedStep(state, step, resultJson, "工具执行失败");
@@ -130,11 +131,9 @@ class PlanExecutor {
                         "step_name", step.getName(),
                         "reason", "工具执行失败",
                         "actual_output", resultJson));
-                if (shouldSkipFailedStep(state, i, step, reason)) {
-                    continue;
-                }
-                state.validationFeedback = reason + "。请调用 revise_plan，基于当前计划与错误上下文重规划。";
-                return false;
+                shouldSkipFailedStep(state, i, step, reason);
+                failureReasons.add(reason);
+                continue;
             }
             StepValidatorTool.StepEvaluationResult evaluation = stepValidatorTool.evaluateStepOutcome(step, resultJson);
             state.lastStepEvaluation = evaluation;
@@ -163,11 +162,9 @@ class PlanExecutor {
                         "score", evaluation.score(),
                         "expected_outcome", expectedOutcome,
                         "actual_output", resultJson));
-                if (shouldSkipFailedStep(state, i, step, detailedReason)) {
-                    continue;
-                }
-                state.validationFeedback = detailedReason + "。请调用 revise_plan，基于当前计划与错误上下文重规划。";
-                return false;
+                shouldSkipFailedStep(state, i, step, detailedReason);
+                failureReasons.add(detailedReason);
+                continue;
             }
             step.setStatus(PlanStepStatus.COMPLETED);
             step.setActualOutput(resultJson);
@@ -177,6 +174,12 @@ class PlanExecutor {
                     "step_id", step.getStepId(),
                     "step_name", step.getName(),
                     "actual_output", resultJson));
+        }
+        if (!failureReasons.isEmpty()) {
+            state.validationFeedback = failureReasons.get(failureReasons.size() - 1)
+                    + "。其他不依赖失败步骤的计划步骤已继续执行；请调用 revise_plan 补齐失败部分。";
+            state.ephemeralMemory.add(buildPlanExecutionSummary(state));
+            return false;
         }
         state.lastFailedStepIndex = -1;
         state.lastFailedPlanFingerprint = "";
@@ -199,11 +202,32 @@ class PlanExecutor {
                 "success".equals(resultJson.get("status")) ? 0.9 : 0.3);
     }
 
-    /**
-     * 判断工具结果是否符合统一 success 状态。
-     */
-    private boolean isToolSuccess(Map<String, Object> resultJson) {
-        return "success".equals(json.normalize((String) resultJson.get("status"), ""));
+    /** 将执行前校验或依赖失败落为步骤失败，但不阻断后续独立步骤。 */
+    private void recordPreExecutionFailure(
+            RuntimeState state, int stepIndex, PlanStepState step, String reason, String riskFlag) {
+        Map<String, Object> failure = new LinkedHashMap<>();
+        failure.put("tool", step.getToolName());
+        failure.put("status", "failed");
+        failure.put("validation_passed", false);
+        failure.put("validation_rules", List.of());
+        failure.put("validation_errors", List.of(reason));
+        failure.put("retryable", false);
+        failure.put("error_code", "plan_precondition_failed");
+        failure.put("data", null);
+        failure.put("metadata", Map.of());
+        step.setStatus(PlanStepStatus.FAILED);
+        step.setActualOutput(failure);
+        rememberFailedStep(state, step, failure, reason);
+        state.lastStepEvaluation = stepValidatorTool.buildToolExecutionFailedResult(failure);
+        state.lastFailedStepIndex = stepIndex;
+        state.lastFailedPlanFingerprint = fingerprintPlan(buildPlanAtIndex(state.latestPlan, stepIndex));
+        state.riskFlags.add(riskFlag);
+        state.planLifecycle.add(Map.of(
+                "event", PlanLifecycleEvent.STEP_FAILED.value(),
+                "step_id", step.getStepId(),
+                "step_name", step.getName(),
+                "reason", reason,
+                "actual_output", failure));
     }
 
     /**

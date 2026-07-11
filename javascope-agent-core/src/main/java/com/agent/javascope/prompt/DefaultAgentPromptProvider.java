@@ -15,11 +15,13 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
     public String buildRoutePrompt(String systemPrompt, String input) {
         return """
                 你是入口语义路由器。仅输出 JSON：
-                {"route":"chat|meta|task","confidence":0-1,"reason":""}
+                {"route":"chat|meta|task","execution_mode":"direct|planned|none","confidence":0-1,"reason":""}
                 路由规则：
                 - chat：寒暄闲聊、情绪表达、无需任务执行的轻对话
                 - meta：询问你是谁、你能做什么、如何使用、能力边界、流程说明
                 - task：需要分析、查询、推荐、执行、检索、规划等任务处理
+                - task 的 execution_mode：direct 仅用于对象明确、一个事实工具即可完成的查询；planned 用于分析、推荐、比较、需要多源证据或多步执行的任务
+                - chat/meta 的 execution_mode 必须为 none
                 - 不确定时优先输出 task
                 约束：
                 - 只允许 route=chat/meta/task
@@ -59,6 +61,7 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
     public String buildActionPrompt(
             String systemPrompt,
             String input,
+            String executionMode,
             String memoryJson,
             String toolsJson,
             String latestPlanJson,
@@ -78,6 +81,7 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                 规则：
                 - 需要调用工具时，填写 tool_calls；不需要时 tool_calls=[]
                 - tool_calls.name 必须来自“可用工具”
+                - 当前执行模式=%s：direct 时只完成单步事实查询，取得结果后输出 final_answer；planned 且最新计划为空时只能调用 create_plan，不得调用普通业务工具
                 - 先做意图判定：非任务型请求（身份问答、能力介绍、闲聊问候）禁止进入工具链，直接自然回答
                 - 任务型请求（analysis/recommendation/query_with_constraints/execution_request）才允许进入工具链
                 - 若可用工具中包含 clarify_requirement，按信息缺口分级：P0（对象缺失/不可逆动作对象缺失）必须澄清；P1（存在歧义）可先按默认执行并轻量确认；P2（风格偏好）直接执行
@@ -85,9 +89,7 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                 - 调用 clarify_requirement 成功后，下一轮必须停止工具调用并仅输出 final_answer（tool_calls=[]）
                 - 澄清阶段 final_answer 建议模板：先说明已理解的任务对象与目标，再给“我已识别/还缺关键信息/可选关注维度/最短输入示例”
                 - 澄清阶段 final_answer 映射：core_conclusions=模板主结论与已识别项；key_evidence=已识别信息+缺失信息；risk_points=继续执行风险；next_actions=明确下一步操作（补充缺失字段+最短回复示例+可选维度建议）
-                - 收紧约束：当任务无需澄清时，尽可能先调用 create_plan，再按计划执行；仅在你能确认单步即可完成且证据充分时，才允许不先规划
-                - 只有“单步即可完成且证据已充分且无需额外检索/规划”三者同时满足时，才允许不调用规划类工具直接输出 final_answer
-                - 若 latestPlan 为空且你判断需要调用任意业务工具，先调用 create_plan，再按计划执行
+                - direct 模式不得调用 create_plan/revise_plan；planned 模式在已有计划后按计划状态继续推进
                 - 计划执行中出现步骤失败、前置依赖阻塞、执行结果与预期不一致、或校验反馈 suggest_replan=true 时，优先调用 revise_plan；仅当当前无计划时调用 create_plan
                 - 不允许在存在失败反馈后继续沿用原计划硬执行；必须先 revise_plan 再继续
                 - 结论无法从执行日志中找到证据时，不要直接给最终结论；先调用规划类工具或计划修正类工具补齐证据
@@ -98,7 +100,7 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                 最新计划：%s
                 执行日志：%s
                 校验反馈：%s
-                """.formatted(systemPrompt, input, memoryJson, toolsJson, latestPlanJson, executionLogJson, validationFeedback);
+                """.formatted(executionMode, systemPrompt, input, memoryJson, toolsJson, latestPlanJson, executionLogJson, validationFeedback);
     }
 
     @Override
@@ -125,11 +127,13 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                 %s
                 
                 强制规则（必须遵守）：
-                1. 必须输出一个 JSON 数组到 "plan" 中。
+                1. 必须输出一个 JSON 数组到 "plan" 中；步骤数量由任务复杂度和可用工具决定，不设固定上限。
                 2. "plan" 中的每一个步骤，必须包含 "tool" 和 "input" 字段，且 "tool" 必须来自以下可用工具列表中的 "name"。
                 3. 如果计划目标是需求澄清，且可用工具中存在 clarify_requirement，优先使用 clarify_requirement；仅当不存在澄清工具时，才允许用 pass/noop。
                 4. "input" 不能为 null 或缺失，确保它始终是一个对象。
                 5. 只有当前步骤必须使用上一步成功产出时，才把 "depends_on_previous" 设为 true；独立步骤必须为 false。
+                6. 后续步骤需要前序结果时，input 必须使用引用而非 null。例如 {"price":{"$ref":"steps.1.data.price"}}；
+                   支持 steps.步骤序号.data.字段、previous.data.字段和 tools.工具名.data.字段，步骤序号从 1 开始。
                 
                 仅可使用以下可用工具：%s
                 用户问题：%s
@@ -153,6 +157,7 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
             int failedStepIndex,
             PlanStepDefinition failedStep,
             Map<String, Object> failureContext,
+            List<Map<String, Object>> failedSteps,
             List<String> completedStepFingerprints,
             List<String> failedStepFingerprints,
             List<FailedStepHistoryItem> failedStepHistory,
@@ -176,7 +181,11 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
 
                 历史失败详情: %s
 
-                强制约束: 你只需要输出失败步骤的替代执行方案（0-3步）。当判断该步骤无需继续执行时，允许输出空数组。不要输出已成功步骤，也不要包含当前失败步骤之外的后续步骤。新方案必须避免所有历史失败步骤的步骤-工具-入参组合。
+                本轮失败/阻塞步骤（含稳定 step_id）: %s
+
+                强制约束: 仅输出如下 JSON，不要输出 plan：
+                {"task_understanding":{},"replacements":[{"replace_step_id":"失败步骤的 step_id","steps":[{"name":"","description":"","tool":"","input":{},"expected_outcome":"","depends_on_previous":false}]}]}
+                replacements 必须覆盖每个失败/阻塞 step_id；只替换这些步骤，禁止输出已成功步骤。steps 可为空，表示明确放弃该步骤。新步骤必须避免所有历史失败步骤的步骤-工具-入参组合。
 
                 禁止复用步骤指纹: %s
 
@@ -191,8 +200,13 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                         toJson(failureContext),
                         toJson(failedStepFingerprints),
                         toJson(failedStepHistory),
+                        toJson(failedSteps),
                         toJson(completedStepFingerprints));
-        return buildPlanPrompt(reviseInput, round, lastError, toolsJson);
+        return """
+                你是计划补丁生成器。上次错误：%s
+                只允许使用以下工具：%s
+                %s
+                """.formatted(lastError, toolsJson, reviseInput);
     }
 
     @Override

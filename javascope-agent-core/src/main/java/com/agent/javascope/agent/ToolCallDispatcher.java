@@ -8,6 +8,8 @@ import com.agent.javascope.contract.plan.PlanStepDefinition;
 import com.agent.javascope.entity.plan.PlanStepState;
 import com.agent.javascope.entity.plan.PlanStepView;
 import com.agent.javascope.entity.plan.PlanToolData;
+import com.agent.javascope.entity.plan.PlanStepFailure;
+import com.agent.javascope.entity.plan.PlanStepReplacement;
 import com.agent.javascope.entity.plan.RevisePlanRequest;
 import com.agent.javascope.entity.tool.ToolResultPayload;
 import com.agent.javascope.plan.PlanLifecycleEvent;
@@ -18,6 +20,7 @@ import com.agent.javascope.tool.runtime.ToolExecutionResult;
 import com.agent.javascope.tool.runtime.ToolInvocation;
 import com.agent.javascope.json.AgentJsonCodecUtil;
 import com.agent.javascope.context.trace.ExecutionEventType;
+import com.agent.javascope.tool.annotation.ToolType;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -67,6 +70,22 @@ class ToolCallDispatcher {
                 state.riskFlags.add("tool_call_direct_not_allowed_" + toolName);
                 continue;
             }
+            if ("direct".equals(state.routeDecision.getExecutionMode())
+                    && ("create_plan".equals(toolName) || "revise_plan".equals(toolName))) {
+                state.executionLog.add(buildToolLog(round, toolName, call.getInput(),
+                        buildDirectCallFailure(toolName, "planning tool is not allowed in direct execution mode")));
+                state.riskFlags.add("direct_mode_planning_tool_blocked_" + toolName);
+                state.validationFeedback = "当前为单步直达任务，请基于已有工具结果输出 final_answer，不要创建或修订计划。";
+                continue;
+            }
+            if (requiresPlanGate(definition, toolName, state)) {
+                state.executionLog.add(buildToolLog(round, toolName, call.getInput(),
+                        buildDirectCallFailure(toolName, "business tool requires create_plan before execution")));
+                state.riskFlags.add("tool_call_requires_plan_" + toolName);
+                state.validationFeedback = "当前尚未建立执行计划。请先调用 create_plan；"
+                        + "只有在运行时 allowlist 中显式放行的单步业务工具才能绕过计划。";
+                continue;
+            }
             Map<String, Object> toolInput = enrichToolInput(toolName, call.getInput(), state);
             state.trace.record(ExecutionEventType.TOOL_REQUESTED, Map.of(
                     "round", round,
@@ -74,14 +93,14 @@ class ToolCallDispatcher {
                     "input", toolInput), Map.of());
             ToolExecutionResult toolResult = toolExecutor.execute(
                     new ToolInvocation(toolName, json.toTree(toolInput), input));
-            Map<String, Object> resultJson = json.asMap(json.toTree(toolResult));
+            Map<String, Object> resultJson = ToolExecutionResultMapper.toCompatibilityMap(toolResult, json);
             state.trace.record(ExecutionEventType.TOOL_COMPLETED, Map.of(
                     "round", round,
                     "tool", toolName,
                     "input", toolInput), resultJson);
             state.executionLog.add(buildToolLog(round, toolName, toolInput, resultJson));
             recordRevisionInputOutput(toolName, toolInput, resultJson, state);
-            if (!isToolSuccess(resultJson)) {
+            if (!toolResult.isSuccess()) {
                 state.riskFlags.add("tool_call_failed_" + toolName);
                 continue;
             }
@@ -89,13 +108,24 @@ class ToolCallDispatcher {
                 handleClarificationResult(resultJson, state);
                 return ToolDispatchStatus.CONTINUE_REASONING;
             }
-            applyPlanResult(resultJson, state);
+            applyPlanResult(toolName, resultJson, state);
             if (shouldExecutePlanAfterToolCall(toolName, state, resultJson)
                     && !planExecutor.execute(input, round, state)) {
                 return ToolDispatchStatus.CONTINUE_REASONING;
             }
         }
         return ToolDispatchStatus.CONTINUE_REASONING;
+    }
+
+    /** 无计划时，系统流程工具可执行；业务工具必须由运行时 allowlist 显式放行。 */
+    private boolean requiresPlanGate(AgentToolDefinition definition, String toolName, RuntimeState state) {
+        return definition.getToolType() == ToolType.BUSINESS
+                && !hasActivePlan(state)
+                && "planned".equals(state.routeDecision.getExecutionMode());
+    }
+
+    private boolean hasActivePlan(RuntimeState state) {
+        return !state.planSteps.isEmpty() || !state.latestPlan.isEmpty();
     }
 
     private Map<String, Object> buildDirectCallFailure(String toolName, String error) {
@@ -141,6 +171,7 @@ class ToolCallDispatcher {
             enriched.putIfAbsent("current_plan", copyPlan(state.latestPlan));
             enriched.putIfAbsent("failed_step_index", state.lastFailedStepIndex);
             enriched.putIfAbsent("failed_step", buildFailedStepForRevision(state));
+            enriched.putIfAbsent("failed_steps", buildFailedStepsForRevision(state));
             if (!state.lastStepEvaluation.evidence().isEmpty()) {
                 enriched.putIfAbsent("failure_context", state.lastStepEvaluation.toMap());
             }
@@ -161,7 +192,7 @@ class ToolCallDispatcher {
     /**
      * 如果工具返回 plan payload，则更新当前计划并重建可执行步骤状态。
      */
-    private void applyPlanResult(Map<String, Object> resultJson, RuntimeState state) {
+    private void applyPlanResult(String sourceTool, Map<String, Object> resultJson, RuntimeState state) {
         ToolResultPayload result = json.convert(resultJson, ToolResultPayload.class);
         if (!hasPlanPayload(result.getData())) {
             return;
@@ -169,13 +200,12 @@ class ToolCallDispatcher {
         PlanToolData data = json.convert(result.getData(), PlanToolData.class);
         state.latestPlanResult = data;
         List<PlanStepDefinition> plan = data.getPlan();
-        String sourceTool = json.normalize(result.getTool(), "");
         if ("revise_plan".equals(sourceTool)) {
-            state.latestPlan = mergeRevisionIntoPlan(plan, state, sourceTool);
+            state.latestPlan = mergeRevisionIntoPlan(plan, data.getReplacements(), state);
             state.latestPlanResult.setPlan(state.latestPlan);
             rebuildPlanSteps(state, sourceTool);
         } else if (!plan.isEmpty()) {
-            state.latestPlan = mergeRevisionIntoPlan(plan, state, sourceTool);
+            state.latestPlan = mergeRevisionIntoPlan(plan, List.of(), state);
             state.latestPlanResult.setPlan(state.latestPlan);
             rebuildPlanSteps(state, sourceTool);
         }
@@ -205,7 +235,8 @@ class ToolCallDispatcher {
         state.planSteps.clear();
         for (int i = 0; i < state.latestPlan.size(); i++) {
             PlanStepDefinition raw = state.latestPlan.get(i);
-            String stepId = state.currentPlanId + "_step_" + (i + 1);
+            String stepId = json.normalize(raw.getStepId(), state.currentPlanId + "_step_" + (i + 1));
+            raw.setStepId(stepId);
             String prevId = i == 0 ? null : state.currentPlanId + "_step_" + i;
             String nextId = i == state.latestPlan.size() - 1 ? null : state.currentPlanId + "_step_" + (i + 2);
             state.planSteps.add(new PlanStepState(
@@ -259,8 +290,28 @@ class ToolCallDispatcher {
      * 将 revise_plan 返回的新片段合并到旧计划失败位置，保留前序成功步骤和后续非重复步骤。
      */
     private List<PlanStepDefinition> mergeRevisionIntoPlan(
-            List<PlanStepDefinition> revisedPlan, RuntimeState state, String sourceTool) {
-        if (!"revise_plan".equals(sourceTool) || state.lastFailedStepIndex < 0 || state.latestPlan.isEmpty()) {
+            List<PlanStepDefinition> revisedPlan, List<PlanStepReplacement> replacements, RuntimeState state) {
+        if (replacements != null && !replacements.isEmpty() && !state.latestPlan.isEmpty()) {
+            Map<String, List<PlanStepDefinition>> patches = new LinkedHashMap<>();
+            for (PlanStepReplacement replacement : replacements) {
+                if (!replacement.getReplaceStepId().isBlank()) {
+                    patches.put(replacement.getReplaceStepId(), replacement.getSteps());
+                }
+            }
+            List<PlanStepDefinition> patched = new ArrayList<>();
+            for (PlanStepDefinition existing : state.latestPlan) {
+                List<PlanStepDefinition> replacement = patches.get(existing.getStepId());
+                if (replacement == null) {
+                    patched.add(copyStep(existing));
+                    continue;
+                }
+                for (PlanStepDefinition step : replacement) {
+                    patched.add(copyStep(step));
+                }
+            }
+            return patched;
+        }
+        if (state.lastFailedStepIndex < 0 || state.latestPlan.isEmpty()) {
             return revisedPlan;
         }
         List<PlanStepDefinition> merged = new ArrayList<>();
@@ -291,6 +342,29 @@ class ToolCallDispatcher {
     private PlanStepDefinition buildFailedStepForRevision(RuntimeState state) {
         List<PlanStepDefinition> failedSteps = buildPlanAtIndex(state.latestPlan, state.lastFailedStepIndex);
         return failedSteps.isEmpty() ? new PlanStepDefinition() : failedSteps.get(0);
+    }
+
+    private List<PlanStepFailure> buildFailedStepsForRevision(RuntimeState state) {
+        List<PlanStepFailure> failures = new ArrayList<>();
+        for (int i = 0; i < state.planSteps.size(); i++) {
+            PlanStepState step = state.planSteps.get(i);
+            if (step.getStatus() != PlanStepStatus.FAILED) {
+                continue;
+            }
+            PlanStepFailure failure = new PlanStepFailure();
+            failure.setStepId(step.getStepId());
+            failure.setStepIndex(i);
+            failure.setStep(new PlanStepDefinition(
+                    step.getName(), step.getDescription(), step.getToolName(),
+                    new LinkedHashMap<>(step.getInput()), step.getExpectedOutcome(), step.isDependsOnPrevious()));
+            failure.getStep().setStepId(step.getStepId());
+            failure.setReason(json.normalize(
+                    json.asStringList(step.getActualOutput().get("validation_errors")).stream().findFirst().orElse("步骤执行失败"),
+                    "步骤执行失败"));
+            failure.setActualOutput(new LinkedHashMap<>(step.getActualOutput()));
+            failures.add(failure);
+        }
+        return failures;
     }
 
     /**
@@ -324,13 +398,15 @@ class ToolCallDispatcher {
      * 复制单个计划步骤。
      */
     private PlanStepDefinition copyStep(PlanStepDefinition step) {
-        return new PlanStepDefinition(
+        PlanStepDefinition copy = new PlanStepDefinition(
                 step.getName(),
                 step.getDescription(),
                 step.getTool(),
                 new LinkedHashMap<>(step.getInput()),
                 step.getExpectedOutcome(),
                 step.isDependsOnPrevious());
+        copy.setStepId(step.getStepId());
+        return copy;
     }
 
     /**
@@ -362,10 +438,6 @@ class ToolCallDispatcher {
     /**
      * 工具成功状态判断。
      */
-    private boolean isToolSuccess(Map<String, Object> resultJson) {
-        return "success".equals(json.normalize((String) resultJson.get("status"), ""));
-    }
-
     /**
      * 判断工具结果 data 是否包含计划结构。
      */

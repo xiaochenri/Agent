@@ -234,7 +234,8 @@ public class ReActAgent extends Agent {
                 promptProvider,
                 systemInstruction,
                 input,
-                toolSchemas,
+                state.routeDecision.getExecutionMode(),
+                visibleToolSchemas(state),
                 context,
                 promptBudget());
         state.trace.record(ExecutionEventType.ACTION_MODEL_REQUESTED, Map.of(
@@ -258,6 +259,22 @@ public class ReActAgent extends Agent {
                 properties.getContextMaxPromptCharacters(),
                 properties.getContextMaxHistoryItems(),
                 properties.getContextMaxEvidenceItems());
+    }
+
+    /** planned 模式的首轮仅暴露 create_plan，防止模型先尝试业务工具再被运行时拒绝。 */
+    private List<Map<String, Object>> visibleToolSchemas(RuntimeState state) {
+        if ("direct".equals(state.routeDecision.getExecutionMode())) {
+            return toolSchemas.stream()
+                    .filter(schema -> !"create_plan".equals(String.valueOf(schema.get("name")))
+                            && !"revise_plan".equals(String.valueOf(schema.get("name"))))
+                    .toList();
+        }
+        if (!"planned".equals(state.routeDecision.getExecutionMode()) || !state.latestPlan.isEmpty()) {
+            return toolSchemas;
+        }
+        return toolSchemas.stream()
+                .filter(schema -> "create_plan".equals(String.valueOf(schema.get("name"))))
+                .toList();
     }
 
     private void completeTrace(RuntimeState state) {

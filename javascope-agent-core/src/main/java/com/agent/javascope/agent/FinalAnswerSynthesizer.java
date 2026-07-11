@@ -112,13 +112,13 @@ class FinalAnswerSynthesizer {
     }
 
     /**
-     * 计划已终态但还没有最终答案时，再触发一次 reasoning 做汇总。
+     * 无论计划是否已建立或已终态，轮次耗尽后都再触发一次禁止工具调用的最终汇总。
      */
     private boolean tryFinalSynthesis(String input, RuntimeState state, ReasoningCallback reasoningCallback) {
-        if (!isPlanTerminal(state)) {
-            return false;
-        }
-        state.validationFeedback = "计划执行已结束。请基于全部执行日志输出 final_answer，不要继续调用工具。";
+        state.validationFeedback = isPlanTerminal(state)
+                ? "计划执行已结束。请基于全部执行日志输出 final_answer，不要继续调用工具。"
+                : "推理轮次已耗尽或计划尚未建立。请仅基于已有执行日志输出保守的 final_answer，"
+                        + "明确证据、局限和后续建议，不要继续调用工具。";
         state.lastResponse = reasoningCallback.reason(properties.getMaxRounds() + 1);
         List<AgentToolCall> toolCalls = toolCallExtractor.extract(state.lastResponse);
         if (!toolCalls.isEmpty()) {

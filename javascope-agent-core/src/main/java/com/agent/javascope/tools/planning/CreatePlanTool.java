@@ -42,7 +42,7 @@ public class CreatePlanTool {
     @AgentTool(
             name = "create_plan",
             title = "创建执行计划",
-            description = "当任务为多步、存在依赖或需先检索再汇总时，创建并校验1-3步可执行计划。",
+            description = "当任务为多步、存在依赖或需先检索再汇总时，创建并校验可执行计划。",
             namespace = "system.planning",
             category = "planning",
             tags = {"system", "planning"},
@@ -98,9 +98,6 @@ public class CreatePlanTool {
         if (plan.isEmpty()) {
             errors.add("plan 不能为空");
             return errors;
-        }
-        if (plan.size() > 3) {
-            errors.add("plan 步数不能超过3");
         }
         for (int i = 0; i < plan.size(); i++) {
             PlanStepDefinition step = plan.get(i);

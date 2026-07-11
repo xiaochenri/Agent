@@ -16,6 +16,8 @@ public class PlanToolData {
     private Map<String, Object> taskUnderstanding = new LinkedHashMap<>();
     /** 可执行计划步骤列表。 */
     private List<PlanStepDefinition> plan = new ArrayList<>();
+    /** revise_plan 返回的局部替换补丁；create_plan 不使用该字段。 */
+    private List<PlanStepReplacement> replacements = new ArrayList<>();
 
     public PlanToolData() {}
 
@@ -38,5 +40,10 @@ public class PlanToolData {
 
     public void setPlan(List<PlanStepDefinition> plan) {
         this.plan = plan == null ? new ArrayList<>() : plan;
+    }
+
+    public List<PlanStepReplacement> getReplacements() { return replacements == null ? new ArrayList<>() : replacements; }
+    public void setReplacements(List<PlanStepReplacement> replacements) {
+        this.replacements = replacements == null ? new ArrayList<>() : replacements;
     }
 }
