@@ -12,7 +12,7 @@ public class AgentRuntimeProperties {
     private boolean finalAnswerValidationEnabled = false;
     private double temperature = 0.2;
     private int timeoutSeconds = 60;
-    private int contextMaxPromptCharacters = 24000;
+    private int contextMaxPromptCharacters = 2400000;
     private int contextMaxHistoryItems = 6;
     private int contextMaxEvidenceItems = 8;
 

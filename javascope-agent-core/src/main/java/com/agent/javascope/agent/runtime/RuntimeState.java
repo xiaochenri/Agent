@@ -31,6 +31,8 @@ public final class RuntimeState {
     public final List<Map<String, Object>> planLifecycle = new ArrayList<>();
     // 轮间短期记忆：仅在下一次 reasoning 提示词中使用，调用后会清空。
     public final List<String> ephemeralMemory = new ArrayList<>();
+    // 业务工具上报的通用决策状态：作为下一轮推理的高优先级上下文，不负责强制终止推理。
+    public final List<Map<String, Object>> businessDecisions = new ArrayList<>();
     // 当前可执行计划的结构化步骤列表，供 executePlan 顺序执行与依赖校验。
     public final List<PlanStepState> planSteps = new ArrayList<>();
     // 最近一次计划工具返回的完整结果（含 task_understanding 等），用于最终响应聚合。

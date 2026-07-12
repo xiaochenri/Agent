@@ -79,11 +79,18 @@ public abstract class Agent {
     }
 
     protected AgentExecutionLogEntry buildReasoningLog(
-            String input, int round, String validationFeedback, Map<String, Object> response) {
+            String input,
+            int round,
+            String validationFeedback,
+            List<Map<String, Object>> businessDecisions,
+            Map<String, Object> response) {
         return new AgentExecutionLogEntry(
                 "reasoning_round_" + round,
                 "reasoning",
-                Map.of("user_input", input, "validation_feedback", validationFeedback),
+                Map.of(
+                        "user_input", input,
+                        "validation_feedback", validationFeedback,
+                        "business_decisions", List.copyOf(businessDecisions)),
                 response,
                 0.6);
     }

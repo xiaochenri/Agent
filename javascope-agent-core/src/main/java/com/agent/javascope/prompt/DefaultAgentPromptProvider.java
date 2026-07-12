@@ -93,6 +93,9 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                 - 计划执行中出现步骤失败、前置依赖阻塞、执行结果与预期不一致、或校验反馈 suggest_replan=true 时，优先调用 revise_plan；仅当当前无计划时调用 create_plan
                 - 不允许在存在失败反馈后继续沿用原计划硬执行；必须先 revise_plan 再继续
                 - 结论无法从执行日志中找到证据时，不要直接给最终结论；先调用规划类工具或计划修正类工具补齐证据
+                - 历史记忆中 type=business_decision 是业务工具给出的决策状态：recommended_action=FINAL_ANSWER 且 repeat_policy=REUSE_EXISTING_RESULT 时，应优先复用已完成范围的证据输出 final_answer；仅当用户问题提出了 completed_scopes 以外的新证据需求、时间范围/对象/口径发生变化，或 missing_scopes 非空时，才继续调用工具
+                - business_decision 仅提供决策依据，不是运行时强制指令；请结合用户问题自行判断
+                - business_decision 如含 answer_context，final_answer 必须以其中的 core_conclusions、key_evidence、risk_points、next_actions 为主要材料，改写为面向用户的自然结论；严禁在最终回答中提及 business_decision、completed_scopes、历史记忆、计划步骤或“应当输出最终答案”等内部过程
                 系统提示：%s
                 用户问题：%s
                 历史记忆：%s

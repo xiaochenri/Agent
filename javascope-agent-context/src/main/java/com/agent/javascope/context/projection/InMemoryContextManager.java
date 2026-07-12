@@ -35,6 +35,19 @@ public class InMemoryContextManager implements ContextManager {
 
         // 证据只保留来源索引；完整工具输出仍可从执行轨迹中获取。
         ArrayNode evidence = JsonNodeFactory.instance.arrayNode();
+        // 决策包是业务工具对“下一步该做什么”的显式判断，必须优先于普通工具索引进入模型上下文。
+        JsonNode businessDecisions = request.businessDecisions();
+        if (businessDecisions.isArray()) {
+            for (JsonNode decision : businessDecisions) {
+                if (evidence.size() >= budget.maxEvidenceItems()) {
+                    break;
+                }
+                ObjectNode summary = JsonNodeFactory.instance.objectNode();
+                summary.put("type", "business_decision");
+                summary.set("decision", decision);
+                evidence.add(summary);
+            }
+        }
         for (JsonNode item : history) {
             if (evidence.size() >= budget.maxEvidenceItems()) {
                 break;

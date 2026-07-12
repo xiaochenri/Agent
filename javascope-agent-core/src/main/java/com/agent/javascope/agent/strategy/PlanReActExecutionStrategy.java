@@ -29,6 +29,7 @@ import com.agent.javascope.tools.validation.StepValidatorTool;
 import com.agent.javascope.verifier.IndependentVerifierService;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -74,6 +75,7 @@ public class PlanReActExecutionStrategy extends Agent implements ExecutionStrate
         RuntimeState state = request.state();
         Consumer<Map<String, Object>> eventConsumer = request.eventConsumer();
         boolean useModelStream = request.useModelStream();
+        int emittedPlanLifecycleCount = 0;
         ensureAgentInitialized();
 
         for (int round = 1; round <= properties.getMaxRounds(); round++) {
@@ -98,7 +100,7 @@ public class PlanReActExecutionStrategy extends Agent implements ExecutionStrate
             if (!toolCalls.isEmpty()) {
                 emitToolCalls(eventConsumer, toolCalls);
                 ToolDispatchStatus dispatchStatus = toolCallDispatcher.execute(input, round, toolCalls, state);
-                emitPlanLifecycle(eventConsumer, state);
+                emittedPlanLifecycleCount = emitPlanLifecycle(eventConsumer, state, emittedPlanLifecycleCount);
                 if (dispatchStatus == ToolDispatchStatus.FINISHED) {
                     return state;
                 }
@@ -132,6 +134,7 @@ public class PlanReActExecutionStrategy extends Agent implements ExecutionStrate
                 json.toTree(state.latestPlan),
                 json.toTree(state.executionLog),
                 json.toTree(state.ephemeralMemory),
+                json.toTree(state.businessDecisions),
                 state.validationFeedback,
                 json.toTree(state.riskFlags)), promptBudget());
         ensureAgentInitialized();
@@ -152,7 +155,8 @@ public class PlanReActExecutionStrategy extends Agent implements ExecutionStrate
                 : chatModel(prompt);
         Map<String, Object> response = json.asMap(rawResponse);
         state.trace.record(ExecutionEventType.ACTION_MODEL_RESPONDED, Map.of("round", round), response);
-        state.executionLog.add(buildReasoningLog(input, round, state.validationFeedback, response));
+        state.executionLog.add(buildReasoningLog(
+                input, round, state.validationFeedback, state.businessDecisions, response));
         state.lastValidationFeedback = state.validationFeedback;
         state.validationFeedback = "";
         state.ephemeralMemory.clear();
@@ -214,21 +218,29 @@ public class PlanReActExecutionStrategy extends Agent implements ExecutionStrate
         }
     }
 
-    private void emitPlanLifecycle(Consumer<Map<String, Object>> eventConsumer, RuntimeState state) {
+    private int emitPlanLifecycle(
+            Consumer<Map<String, Object>> eventConsumer, RuntimeState state, int emittedCount) {
         if (eventConsumer == null || state.planLifecycle.isEmpty()) {
-            return;
+            return emittedCount;
         }
-        int start = Math.max(0, state.planLifecycle.size() - 4);
+        int start = Math.max(0, Math.min(emittedCount, state.planLifecycle.size()));
         for (int i = start; i < state.planLifecycle.size(); i++) {
             Map<String, Object> item = state.planLifecycle.get(i);
             Object event = item.get("event");
             Object stepName = item.get("step_name");
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("type", "process");
+            payload.put("category", "plan");
+            payload.put("planEvent", String.valueOf(event));
+            payload.putAll(item);
             if (stepName == null) {
-                emitStreamEvent(eventConsumer, "process", "计划事件：" + String.valueOf(event));
+                payload.put("message", "计划事件：" + String.valueOf(event));
             } else {
-                emitStreamEvent(eventConsumer, "process", "计划步骤：" + stepName + "（" + event + "）");
+                payload.put("message", "计划步骤：" + stepName + "（" + event + "）");
             }
+            eventConsumer.accept(payload);
         }
+        return state.planLifecycle.size();
     }
 
     private void emitStreamEvent(Consumer<Map<String, Object>> eventConsumer, String type, String message) {

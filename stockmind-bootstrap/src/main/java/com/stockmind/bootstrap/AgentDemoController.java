@@ -386,7 +386,10 @@ public class AgentDemoController {
             }
             String message = normalize(event.get("message") == null ? null : String.valueOf(event.get("message")), "");
             if (!message.isBlank()) {
-                emitFluxEvent(sink, "process", Map.of("message", message));
+                Map<String, Object> processPayload = new LinkedHashMap<>(event);
+                processPayload.remove("type");
+                processPayload.put("message", message);
+                emitFluxEvent(sink, "process", processPayload);
             }
         }
         String rawReply = rawReplyHolder[0];

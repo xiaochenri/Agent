@@ -11,6 +11,8 @@ public record ContextRequest(
         JsonNode executionLog,
         /** 仅供下一轮使用的短期记忆或提示。 */
         JsonNode ephemeralMemory,
+        /** 业务工具上报的通用决策状态，应优先于普通历史日志展示。 */
+        JsonNode businessDecisions,
         /** 最近一次校验或执行失败生成的修正约束。 */
         String validationFeedback,
         /** 当前执行过程中累积的风险标记。 */
@@ -21,6 +23,7 @@ public record ContextRequest(
         Objects.requireNonNull(currentPlan, "currentPlan must not be null");
         Objects.requireNonNull(executionLog, "executionLog must not be null");
         Objects.requireNonNull(ephemeralMemory, "ephemeralMemory must not be null");
+        Objects.requireNonNull(businessDecisions, "businessDecisions must not be null");
         validationFeedback = validationFeedback == null ? "" : validationFeedback;
         Objects.requireNonNull(riskFlags, "riskFlags must not be null");
     }

@@ -36,7 +36,7 @@
   - `StockMindApplication`: 应用启动类
   - `AgentDemoController`: demo、流式对话、会话对话、记忆管理接口
   - `StockAgentBusinessConfiguration`: 股票场景 prompt 定制与澄清策略
-  - `StockAgentTools`: 股票业务工具，包括行情、新闻、知识库检索
+  - 股票业务工具按类型拆分：`MarketDataTools`（行情/K线）、`TechnicalIndicatorTools`（技术指标）、`ResearchEvidenceTools`（新闻/知识库）、`StockAnalysisTools`（综合总结）
   - `UserMemoryService`: 用户记忆的读写、TTL 和 prompt 拼接
 - `stockmind-domain`、`stockmind-application`、`stockmind-infrastructure`: 标准分层模块，目前主要作为后续业务扩展边界保留
 

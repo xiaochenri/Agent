@@ -1,6 +1,7 @@
 package com.agent.javascope.agent.planning;
 
 import com.agent.javascope.agent.runtime.RuntimeState;
+import com.agent.javascope.agent.support.BusinessDecisionTracker;
 import com.agent.javascope.agent.support.ToolExecutionResultMapper;
 import com.agent.javascope.context.trace.ExecutionEventType;
 import com.agent.javascope.contract.plan.FailedStepHistoryItem;
@@ -172,6 +173,7 @@ public class PlanExecutor {
             step.setStatus(PlanStepStatus.COMPLETED);
             step.setActualOutput(resultJson);
             rememberCompletedStep(state, step, resultJson);
+            BusinessDecisionTracker.capture(toolName, resultJson, state);
             state.planLifecycle.add(Map.of(
                     "event", PlanLifecycleEvent.STEP_COMPLETED.value(),
                     "step_id", step.getStepId(),

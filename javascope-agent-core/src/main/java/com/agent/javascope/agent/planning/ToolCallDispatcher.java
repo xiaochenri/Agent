@@ -1,6 +1,7 @@
 package com.agent.javascope.agent.planning;
 
 import com.agent.javascope.agent.runtime.RuntimeState;
+import com.agent.javascope.agent.support.BusinessDecisionTracker;
 import com.agent.javascope.agent.support.ToolExecutionResultMapper;
 import com.agent.javascope.context.trace.ExecutionEventType;
 import com.agent.javascope.contract.plan.PlanStepDefinition;
@@ -101,6 +102,7 @@ public class ToolCallDispatcher {
                 state.riskFlags.add("tool_call_failed_" + toolName);
                 continue;
             }
+            BusinessDecisionTracker.capture(toolName, resultJson, state);
             if ("clarify_requirement".equals(toolName)) {
                 handleClarificationResult(resultJson, state);
                 return ToolDispatchStatus.CONTINUE_REASONING;

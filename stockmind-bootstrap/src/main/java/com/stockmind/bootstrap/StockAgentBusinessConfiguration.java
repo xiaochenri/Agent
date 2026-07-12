@@ -2,6 +2,8 @@ package com.stockmind.bootstrap;
 
 import com.agent.javascope.prompt.AgentBusinessPromptCustomizer;
 import com.agent.javascope.tool.runtime.ClarificationBusinessProvider;
+import com.stockmind.application.analysis.TechnicalAnalysisService;
+import com.stockmind.application.market.MarketDataProvider;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -11,6 +13,11 @@ import org.springframework.context.annotation.Configuration;
 
 @Configuration
 public class StockAgentBusinessConfiguration {
+
+    @Bean
+    public TechnicalAnalysisService technicalAnalysisService(MarketDataProvider marketDataProvider) {
+        return new TechnicalAnalysisService(marketDataProvider);
+    }
 
     @Bean
     public AgentBusinessPromptCustomizer stockPromptCustomizer() {
@@ -37,12 +44,13 @@ public class StockAgentBusinessConfiguration {
 
                         业务规则补充（股票场景）：
                         - 工具使用场景必须匹配步骤目标，不允许“为调用而调用”
-                        - 股票任务中，进入业务检索前需保证“标的+时间范围”明确；分析维度缺失时可按默认风险框架执行（价格波动/事件催化/基本面信号）
+                        - 股票任务中，标的必须明确；用户未给时间范围时，默认使用截至当前日期的近一个月，禁止自行选择过期区间
                         - 对非任务型请求（如“你是谁”“你能帮我做什么”），必须直接输出面向用户的自然回答，不得输出“非任务型请求/无需进入工具链”等内部流程描述
                         - 当用户问“你能帮我做什么”时，core_conclusions 至少包含：你能提供的能力列表 + 1-2条用户可直接输入的示例
                         - 当用户问“你是谁”时，core_conclusions 应先说明你的角色，再给出可执行帮助范围
                         - 当任务可单步完成时按需直接调用工具：价格类走行情工具；事件类走新闻工具；财报类走知识库工具
-                        - final_answer 的关键结论必须能在执行日志中找到依据；若证据不足，继续调用工具而不是直接下结论
+                        - final_answer 的关键结论必须能在执行日志中找到依据；当新闻或知识库不可用时，基于已获得的行情与技术证据继续完成结论，不要重复调用同一工具
+                        - 技术指标优先调用 technical_indicator_snapshot；不要先输出完整 historical_bars 再逐个重复调用指标，除非用户明确要求查看K线或单项指标
                         - 回答应优先覆盖：行情表现、事件催化、基本面信号、风险点
                         - 涉及“今天/近期”必须给出明确日期，避免模糊时效描述
                         - 不得把不确定信息表述为确定结论
@@ -55,11 +63,15 @@ public class StockAgentBusinessConfiguration {
                         
                         业务规则补充（股票场景）：
                         - 计划必须围绕“标的、时间、证据来源”组织，确保结论可追溯
-                        - 若已知缺少标的或时间窗，不要直接做行情/新闻/知识检索；仅缺分析维度时可按默认框架继续
+                        - 若缺少标的，不要直接做行情/新闻/知识检索；仅缺时间窗时使用截至当前日期近一个月的默认窗口，并在结论中说明
                         - 若用户诉求是“推荐哪些股票”，建议先补齐风险偏好或筛选标准
                         - 禁止输出空入参调用：每个业务工具都必须包含完成当前步骤所需的最小参数
                         - 若涉及“今天/近期”，步骤里必须包含时效性核验
-                        - 遇到参数映射失败时，优先新增“参数澄清或归一化”步骤，再继续行情/新闻/财报检索
+                        - 新闻和知识库属于补充证据，不得作为技术总结的硬依赖；证据不足时基于已获得的数据完成总结并说明待补充维度
+                        - 最终总结必须传入 technical_indicator_snapshot 的结构化 data 作为 technical_data，不能用“技术指标结果”等静态占位文本代替
+                        - stock_snapshot_analysis 返回 analysis_readiness 后，必须先阅读 recommended_next_action：当 ready_for_answer=true 且 recommended_next_action=FINAL_ANSWER 时，应直接输出 final_answer；只有用户问题存在 required_gaps 或能明确说明新增证据价值时，才继续调用 suggested_tools
+                        - 若历史记忆包含 type=business_decision，优先按其中的 completed_scopes 复用已有股票证据；当 recommended_action=FINAL_ANSWER 且 repeat_policy=REUSE_EXISTING_RESULT 时，相同标的、时间窗、复权口径的问题不得重复调用行情、K线或技术指标工具
+                        - stock_snapshot_analysis 的 answer_context 是最终回答的首要业务材料：直接面向用户说明行情、技术判断、综合价值判断和风险，不得把 decision、analysis_readiness、覆盖范围或计划过程写入 final_answer
                         """;
             }
 

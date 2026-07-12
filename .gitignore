@@ -9,3 +9,6 @@
 /javascope-agent-spi/target/
 /javascope-agent-spring-boot-starter/target/
 /javascope-agent-context/target/
+/stockmind-infrastructure/target/
+/stockmind-domain/target/
+/stockmind-application/target/

@@ -2,470 +2,114 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Agent 流式对话</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>StockMind · AI 股票研究工作台</title>
   <style>
     :root {
-      --bg: #f6f8fb;
-      --panel: #ffffff;
-      --text: #17212b;
-      --muted: #6b7a8c;
-      --primary: #0b6bcb;
-      --border: #d9e1ec;
-      --user: #e8f2ff;
-      --assistant: #f2f5f9;
+      color-scheme: light;
+      --nav:#101a2b; --nav-soft:#19263b; --ink:#152033; --muted:#6d7888;
+      --line:#e5e9ef; --surface:#fff; --canvas:#f5f7fa; --brand:#315bea;
+      --brand-soft:#edf1ff; --up:#d54a45; --down:#168261; --amber:#b26a14;
+      --shadow:0 12px 32px rgba(17,29,55,.12);
     }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
-      color: var(--text);
-      background: var(--bg);
-    }
-    .app {
-      max-width: 920px;
-      height: 100vh;
-      margin: 0 auto;
-      padding: 16px;
-      display: grid;
-      grid-template-rows: auto 1fr auto;
-      gap: 12px;
-    }
-    .topbar, .composer {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 12px;
-    }
-    .topbar {
-      display: grid;
-      grid-template-columns: 1fr 1fr auto;
-      gap: 10px;
-      align-items: end;
-    }
-    label {
-      display: block;
-      font-size: 12px;
-      color: var(--muted);
-      margin-bottom: 5px;
-    }
-    input, textarea, button {
-      width: 100%;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      font-size: 14px;
-      padding: 10px 12px;
-      outline: none;
-      font-family: inherit;
-    }
-    input:focus, textarea:focus {
-      border-color: var(--primary);
-      box-shadow: 0 0 0 3px rgba(11, 107, 203, 0.12);
-    }
-    button {
-      width: auto;
-      min-width: 88px;
-      border: none;
-      background: var(--primary);
-      color: #fff;
-      font-weight: 600;
-      cursor: pointer;
-    }
-    button:disabled {
-      opacity: 0.65;
-      cursor: not-allowed;
-    }
-    .ghost {
-      background: #edf3fb;
-      color: #1d4f85;
-      border: 1px solid var(--border);
-    }
-    .chat {
-      min-height: 0;
-      overflow: auto;
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 16px;
-    }
-    .message {
-      max-width: 78%;
-      margin-bottom: 14px;
-      padding: 10px 12px;
-      border-radius: 8px;
-      word-break: break-word;
-      line-height: 1.55;
-    }
-    .content p {
-      margin: 0 0 10px;
-    }
-    .content p:last-child {
-      margin-bottom: 0;
-    }
-    .content h3 {
-      margin: 14px 0 8px;
-      font-size: 15px;
-      line-height: 1.35;
-      color: #23384f;
-    }
-    .content ul {
-      margin: 0 0 10px;
-      padding-left: 20px;
-    }
-    .content li {
-      margin-bottom: 5px;
-    }
-    .message.user {
-      margin-left: auto;
-      background: var(--user);
-    }
-    .message.user .content {
-      white-space: pre-wrap;
-    }
-    .message.assistant {
-      margin-right: auto;
-      background: var(--assistant);
-    }
-    .meta {
-      display: block;
-      color: var(--muted);
-      font-size: 12px;
-      margin-bottom: 6px;
-    }
-    .thinking {
-      color: #48627f;
-      font-size: 13px;
-      border-left: 3px solid #b8cbe2;
-      padding-left: 8px;
-      margin-bottom: 8px;
-    }
-    .thinking:empty {
-      display: none;
-    }
-    .composer {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 10px;
-      align-items: end;
-    }
-    textarea {
-      min-height: 54px;
-      max-height: 160px;
-      resize: vertical;
-    }
-    .actions {
-      display: flex;
-      gap: 8px;
-    }
-    @media (max-width: 720px) {
-      .app { padding: 10px; }
-      .topbar, .composer { grid-template-columns: 1fr; }
-      .message { max-width: 92%; }
-      button { width: 100%; }
-      .actions { width: 100%; }
-    }
+    *{box-sizing:border-box}
+    html,body{width:100%;height:100%;margin:0;overflow:hidden}
+    body{font:14px/1.55 Inter,"PingFang SC","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--canvas)}
+    button,input,textarea{font:inherit} button{cursor:pointer} button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid rgba(49,91,234,.2);outline-offset:2px}
+    .app-shell{width:100%;height:100dvh;display:grid;grid-template-columns:248px minmax(480px,1fr) minmax(340px,400px);overflow:hidden}
+    .side{min-width:0;min-height:0;overflow:hidden}.left{display:flex;flex-direction:column;background:var(--nav);color:#dbe4f3;border-right:1px solid #26354d}.center{min-width:0;min-height:0;height:100%;overflow:hidden;display:grid;grid-template-rows:64px minmax(0,1fr) auto;background:var(--canvas)}.right{background:var(--surface);border-left:1px solid var(--line);overflow:auto}
+    .brand{height:64px;padding:0 18px;display:flex;align-items:center;gap:11px;border-bottom:1px solid #26354d}.logo{width:30px;height:30px;border-radius:9px;background:linear-gradient(145deg,#6d88ff,#315bea);display:grid;place-items:center;font-weight:800;color:#fff}.brand strong{font-size:16px;color:#fff}.brand small{display:block;color:#8290a5;font-size:10px;letter-spacing:.08em}
+    .left-body{padding:14px 12px;overflow:auto}.new-chat{width:100%;height:42px;border:0;border-radius:10px;background:var(--brand);color:#fff;font-weight:700}.side-title{margin:22px 8px 8px;color:#77859a;font-size:11px;font-weight:700;letter-spacing:.1em}.session-search{width:100%;padding:9px 10px;border:1px solid #2d3b51;background:#172338;border-radius:9px;color:#fff}.nav-list{display:grid;gap:3px}.nav-item{width:100%;padding:9px 10px;border:0;border-radius:8px;background:transparent;color:#b9c5d6;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.nav-item:hover,.nav-item.active{background:var(--nav-soft);color:#fff}.nav-item small{float:right;color:#728097}.ticker-dot{display:inline-grid;place-items:center;width:20px;height:20px;margin-right:8px;border-radius:6px;background:#27364d;color:#9fb0c8;font-size:10px}.left-foot{margin-top:auto;padding:12px;border-top:1px solid #26354d}.profile{display:flex;align-items:center;gap:9px;padding:7px}.avatar{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;background:#30415d;color:#fff}.dev-btn{border:0;background:transparent;color:#7f8ea4;margin-left:auto}
+    .topbar{display:flex;align-items:center;gap:14px;padding:10px 20px;background:rgba(255,255,255,.94);border-bottom:1px solid var(--line);backdrop-filter:blur(8px)}.icon-btn{display:none;width:38px;height:38px;border:1px solid var(--line);border-radius:9px;background:#fff}.search-wrap{position:relative;flex:1;max-width:580px}.search-wrap input{width:100%;height:42px;padding:0 42px;border:1px solid var(--line);border-radius:11px;background:#f8f9fb}.search-icon{position:absolute;left:14px;top:10px;color:#7b8797}.kbd{position:absolute;right:11px;top:10px;padding:1px 6px;border:1px solid #dce1e9;border-radius:5px;color:#8993a1;font-size:11px}.market{margin-left:auto;text-align:right;white-space:nowrap}.market strong{font-size:12px}.market small{display:block;color:var(--muted);font-size:11px}.live{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--down);margin-right:6px}
+    .messages{min-height:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;padding:28px clamp(20px,4vw,58px) 20px;scroll-behavior:smooth}.welcome{max-width:760px;margin:2vh auto 28px}.welcome-badge{display:inline-block;padding:5px 9px;border-radius:99px;background:var(--brand-soft);color:var(--brand);font-size:12px;font-weight:700}.welcome h1{font-size:28px;line-height:1.3;margin:14px 0 7px}.welcome p{margin:0;color:var(--muted)}.prompts{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:22px}.prompt{padding:14px;border:1px solid var(--line);border-radius:12px;background:#fff;text-align:left;color:var(--ink)}.prompt:hover{border-color:#b9c6f8;box-shadow:0 6px 18px rgba(49,91,234,.08)}.prompt strong{display:block;margin-bottom:3px}.prompt span{font-size:12px;color:var(--muted)}
+    .message{max-width:760px;margin:0 auto 22px}.message.user{display:flex;justify-content:flex-end}.bubble{max-width:78%;padding:11px 15px;border-radius:14px 14px 3px 14px;background:var(--brand);color:#fff;white-space:pre-wrap}.assistant-head{display:flex;align-items:center;gap:8px;margin-bottom:9px;font-size:12px;color:var(--muted)}.bot{width:25px;height:25px;border-radius:8px;display:grid;place-items:center;background:var(--nav);color:#fff}.answer{font-size:15px}.answer p{margin:0 0 10px}.answer h3{margin:17px 0 8px;font-size:15px}.answer ul{padding-left:20px}.answer-card{margin:10px 0;border:1px solid var(--line);border-radius:12px;background:#fff;overflow:hidden}.card-title{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--line);font-weight:700}.pill{padding:3px 8px;border-radius:99px;background:#fff1ef;color:#b23f3a;font-size:11px}.card-body{padding:14px}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.metric{padding:10px;background:#f7f8fa;border-radius:8px}.metric span{display:block;color:var(--muted);font-size:11px}.metric b{font-size:16px}.positive{color:var(--up)}.negative{color:var(--down)}.disclaimer{margin-top:10px;color:var(--muted);font-size:11px}
+    details.trace{margin:8px 0 12px;border-left:2px solid #ccd4e0;padding-left:12px;color:var(--muted);font-size:12px}details.trace summary{cursor:pointer;color:#566273;font-weight:600}.thinking{padding:7px 0}.thinking:empty{display:none}.thinking::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--brand);margin-right:8px;animation:pulse 1s infinite}@keyframes pulse{50%{opacity:.25}}
+    .composer-wrap{position:relative;z-index:2;min-width:0;padding:0 clamp(20px,4vw,58px) max(16px,env(safe-area-inset-bottom));background:linear-gradient(transparent,var(--canvas) 20%)}.quick{max-width:760px;margin:0 auto 9px;display:flex;gap:7px;overflow:auto;padding-top:12px}.chip{flex:none;padding:6px 10px;border:1px solid var(--line);border-radius:99px;background:#fff;color:#596577;font-size:12px}.chip.active,.chip:hover{color:var(--brand);border-color:#b8c5fb;background:var(--brand-soft)}.composer{max-width:760px;margin:auto;padding:10px 10px 8px 14px;border:1px solid #d9dfe8;border-radius:15px;background:#fff;box-shadow:0 8px 24px rgba(25,38,61,.08)}.composer textarea{display:block;width:100%;min-height:34px;max-height:130px;padding:5px 0;border:0;outline:0;resize:none;color:var(--ink)}.compose-foot{display:flex;align-items:center;gap:6px}.context-tag{padding:4px 8px;border-radius:6px;background:#f2f4f7;color:#687486;font-size:11px}.compose-hint{margin-left:auto;color:#9aa3af;font-size:11px}.send,.stop{width:34px;height:34px;border:0;border-radius:9px;background:var(--brand);color:#fff;font-weight:800}.stop{display:none;background:#e9edf3;color:#3e4958}.composer.generating .send{display:none}.composer.generating .stop{display:block}
+    .research-head{position:sticky;top:0;z-index:2;padding:18px 18px 14px;background:rgba(255,255,255,.95);border-bottom:1px solid var(--line);backdrop-filter:blur(8px)}.research-head h2{margin:0;font-size:15px}.research-head p{margin:2px 0 0;color:var(--muted);font-size:11px}.close-panel{display:none;float:right;border:0;background:transparent;font-size:20px}.section{padding:16px 18px;border-bottom:1px solid var(--line)}.section-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;font-size:12px;font-weight:800}.section-title button{border:0;background:transparent;color:var(--brand);font-size:11px}.quote-row{display:flex;align-items:flex-end;justify-content:space-between}.quote-name h3{margin:0;font-size:18px}.quote-name span{color:var(--muted);font-size:11px}.quote-price{text-align:right}.quote-price b{display:block;font-size:24px}.quote-price span{font-size:12px;font-weight:600}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:15px}.stat span{display:block;color:var(--muted);font-size:10px}.stat b{font-size:12px}.chart-tabs{display:flex;gap:5px;margin-bottom:10px}.chart-tab{padding:4px 8px;border:0;border-radius:6px;background:transparent;color:var(--muted);font-size:11px}.chart-tab.active{background:var(--brand-soft);color:var(--brand)}.chart{height:178px;position:relative;background:linear-gradient(to bottom,#fff 0 24%,#edf0f4 25%,#fff 26% 49%,#edf0f4 50%,#fff 51% 74%,#edf0f4 75%,#fff 76%);overflow:hidden}.chart svg{width:100%;height:100%}.chart-note{position:absolute;right:6px;top:6px;color:var(--muted);font-size:10px}.financials{display:grid;grid-template-columns:1fr 1fr;gap:8px}.financial{padding:9px;border-radius:8px;background:#f7f8fa}.financial span{display:block;color:var(--muted);font-size:10px}.event{position:relative;padding:0 0 14px 17px;border-left:1px solid #dbe0e8}.event::before{content:"";position:absolute;left:-4px;top:4px;width:7px;height:7px;border-radius:50%;background:var(--brand)}.event time{display:block;color:var(--muted);font-size:10px}.event b{font-size:12px}.delay{padding:8px 10px;border-radius:8px;background:#fff7e8;color:#87520f;font-size:11px}
+    .workflow-list{padding:14px;display:grid;gap:12px}.workflow-empty{margin:34px 12px;text-align:center;color:var(--muted)}.workflow-empty-icon{width:48px;height:48px;margin:0 auto 12px;display:grid;place-items:center;border-radius:14px;background:var(--brand-soft);color:var(--brand);font-size:22px}.workflow-empty b{display:block;color:var(--ink);margin-bottom:5px}.workflow-empty p{margin:0;font-size:12px}.run-card{border:1px solid var(--line);border-radius:12px;background:#fff;overflow:hidden}.run-card.active{border-color:#bac7fb;box-shadow:0 5px 18px rgba(49,91,234,.08)}.run-head{padding:12px 13px;border-bottom:1px solid var(--line);background:#fafbfc}.run-query{display:block;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.run-meta{display:flex;justify-content:space-between;margin-top:4px;color:var(--muted);font-size:10px}.run-status{color:var(--brand);font-weight:700}.run-card.done .run-status{color:var(--down)}.run-card.error .run-status{color:#c4423b}.flow{padding:14px 13px 5px}.flow-step{position:relative;display:grid;grid-template-columns:24px 1fr;gap:9px;padding-bottom:18px}.flow-step:not(:last-child)::after{content:"";position:absolute;left:11px;top:24px;bottom:0;width:1px;background:#dbe1eb}.step-icon{position:relative;z-index:1;width:24px;height:24px;border-radius:8px;display:grid;place-items:center;background:#eef1f5;color:#657184;font-size:11px}.flow-step.tool .step-icon{background:#fff3df;color:#a45c05}.flow-step.answer .step-icon{background:#e9f7f1;color:var(--down)}.flow-step.running .step-icon{background:var(--brand-soft);color:var(--brand);animation:pulse 1s infinite}.step-body b{display:block;font-size:11px}.step-body p{margin:2px 0 0;color:var(--muted);font-size:11px;line-height:1.45;word-break:break-word}.step-tool{display:inline-block;margin-top:5px;padding:2px 6px;border-radius:5px;background:#f4f5f7;color:#657184;font:10px ui-monospace,SFMono-Regular,monospace}.run-duration{padding:0 13px 12px;color:var(--muted);font-size:10px}
+    .plan-group{margin:-7px 0 18px 33px;padding:11px 10px 3px 13px;border-left:2px solid #b9c6f8;border-radius:0 9px 9px 0;background:#f8f9ff}.plan-title{display:flex;justify-content:space-between;gap:8px;font-size:11px}.plan-title span{color:var(--brand);font-size:10px}.plan-method{margin:5px 0 11px;color:var(--muted);font-size:10px}.plan-step{position:relative;padding:0 0 12px 17px}.plan-step::before{content:"";position:absolute;left:0;top:4px;width:7px;height:7px;border:2px solid #aab6ca;border-radius:50%;background:#fff}.plan-step::after{content:"";position:absolute;left:4px;top:14px;bottom:0;width:1px;background:#d9deea}.plan-step:last-child::after{display:none}.plan-step.running::before{border-color:var(--brand);background:var(--brand-soft)}.plan-step.completed::before{border-color:var(--down);background:var(--down)}.plan-step.failed::before{border-color:#c4423b;background:#c4423b}.plan-step-head{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11px}.plan-step-state{flex:none;color:var(--muted);font-size:9px}.plan-step.running .plan-step-state{color:var(--brand)}.plan-step.completed .plan-step-state{color:var(--down)}.plan-step-desc,.plan-step-expected{margin-top:2px;color:var(--muted);font-size:10px;line-height:1.4}.plan-step-tool{display:inline-block;margin-top:4px;padding:2px 6px;border-radius:5px;background:#fff0d8;color:#985603;font:9px ui-monospace,SFMono-Regular,monospace}
+    .drawer-mask{display:none;position:fixed;inset:0;z-index:8;background:rgba(11,18,31,.45)}.dev-dialog{border:0;border-radius:14px;padding:0;box-shadow:var(--shadow);width:min(440px,calc(100% - 28px))}.dev-dialog::backdrop{background:rgba(11,18,31,.45)}.dialog-head{display:flex;justify-content:space-between;padding:17px 20px;border-bottom:1px solid var(--line)}.dialog-body{padding:18px 20px}.field{margin-bottom:13px}.field label{display:block;color:var(--muted);font-size:11px;margin-bottom:5px}.field input{width:100%;padding:9px;border:1px solid var(--line);border-radius:8px}.dialog-actions{display:flex;justify-content:flex-end;padding:0 20px 18px}.dialog-actions button{padding:8px 14px;border:0;border-radius:8px;background:var(--brand);color:#fff}
+    @media(max-width:1279px){.app-shell{grid-template-columns:68px minmax(480px,1fr)}.left .brand-copy,.left .side-title,.left .session-search,.left .nav-item span,.left .nav-item small,.left .profile-info{display:none}.brand{padding:0;justify-content:center}.left-body{padding:14px 8px}.new-chat{font-size:0}.new-chat::after{content:"＋";font-size:22px}.nav-item{text-align:center;padding:9px 2px}.ticker-dot{margin:0}.right{position:fixed;right:0;top:0;bottom:0;z-index:10;width:min(400px,92vw);box-shadow:var(--shadow);transform:translateX(105%);transition:.25s}.right.open{transform:none}.drawer-mask.open{display:block}.icon-btn{display:block}.profile{justify-content:center}.dev-btn{display:none}.close-panel{display:block}}
+    @media(max-width:767px){.app-shell{display:block}.left{position:fixed;inset:0 auto 0 0;z-index:10;width:min(310px,88vw);transform:translateX(-105%);transition:.25s;box-shadow:var(--shadow)}.left.open{transform:none}.left .brand-copy,.left .side-title,.left .session-search,.left .nav-item span,.left .nav-item small,.left .profile-info{display:block}.left .nav-item{text-align:left;padding:9px 10px}.left .ticker-dot{margin-right:8px}.left .brand{padding:0 18px;justify-content:flex-start}.center{height:100dvh;grid-template-rows:58px minmax(0,1fr) auto}.topbar{padding:8px 12px;gap:8px}.market{display:none}.search-wrap input{height:40px}.kbd{display:none}.messages{padding:20px 14px 12px}.welcome{margin-top:0}.welcome h1{font-size:22px}.prompts{grid-template-columns:1fr}.prompt:nth-child(n+3){display:none}.bubble{max-width:88%}.metrics{grid-template-columns:1fr 1fr}.composer-wrap{padding:0 10px max(10px,env(safe-area-inset-bottom))}.quick{margin-left:2px}.compose-hint{display:none}}
   </style>
 </head>
 <body>
-<main class="app">
-  <section class="topbar">
-    <div>
-      <label for="sessionId">sessionId</label>
-      <input id="sessionId" value="stream-chat-001" />
+<main class="app-shell">
+  <aside id="leftPanel" class="side left" aria-label="主导航">
+    <div class="brand"><div class="logo">S</div><div class="brand-copy"><strong>StockMind</strong><small>AI RESEARCH</small></div></div>
+    <div class="left-body">
+      <button id="newChatBtn" class="new-chat">＋ 新建分析</button>
+      <div class="side-title">会话</div><input id="sessionSearch" class="session-search" placeholder="搜索会话…" />
+      <nav class="nav-list" aria-label="会话历史">
+        <button class="nav-item active"><i class="ticker-dot">宁</i><span>宁德时代趋势分析</span><small>刚刚</small></button>
+        <button class="nav-item"><i class="ticker-dot">茅</i><span>贵州茅台估值讨论</span><small>周五</small></button>
+        <button class="nav-item"><i class="ticker-dot">沪</i><span>沪深 300 周度复盘</span><small>7/8</small></button>
+      </nav>
     </div>
-    <div>
-      <label for="userId">userId</label>
-      <input id="userId" value="demo-user" />
-    </div>
-    <button id="clearBtn" class="ghost" type="button">清空</button>
+    <div class="left-foot"><div class="profile"><div class="avatar">HU</div><div class="profile-info"><b>研究员</b><small style="display:block;color:#77859a">demo-user</small></div><button id="devBtn" class="dev-btn" title="开发设置">⚙</button></div></div>
+  </aside>
+  <section class="center">
+    <header class="topbar"><button id="navToggle" class="icon-btn" aria-label="打开导航">☰</button><div class="search-wrap"><span class="search-icon">⌕</span><input id="stockSearch" placeholder="搜索股票代码、名称或提问" aria-label="搜索证券" /><span class="kbd">⌘ K</span></div><div class="market"><strong><i class="live"></i>A股 · 已收盘</strong><small>延迟行情 · 更新于 15:05:12</small></div><button id="researchToggle" class="icon-btn" aria-label="打开研究面板">▤</button></header>
+    <section id="chatBox" class="messages" aria-live="polite">
+      <div id="welcome" class="welcome"><span class="welcome-badge">股票研究智能体</span><h1>下午好，今天想研究什么？</h1><p>从技术面、基本面与公开事件中整理可验证的研究线索。</p><div class="prompts"><button class="prompt" data-prompt="分析宁德时代最近 3 个月的技术趋势"><strong>分析技术趋势</strong><span>均线、MACD、RSI 与量价关系</span></button><button class="prompt" data-prompt="综合分析贵州茅台的基本面和估值"><strong>基本面与估值</strong><span>增长质量、盈利能力与估值区间</span></button><button class="prompt" data-prompt="总结比亚迪近期重要新闻和潜在影响"><strong>梳理近期事件</strong><span>公告、新闻、财报与风险信号</span></button><button class="prompt" data-prompt="对比宁德时代和比亚迪的投资逻辑"><strong>同业对比</strong><span>核心指标、相对强弱与分歧点</span></button></div></div>
+    </section>
+    <footer class="composer-wrap"><div class="quick"><button class="chip active" data-prefix="综合分析：">综合</button><button class="chip" data-prefix="从技术面分析：">技术面</button><button class="chip" data-prefix="从基本面分析：">基本面</button><button class="chip" data-prefix="分析近期新闻：">新闻</button><button class="chip" data-prefix="对比分析：">对比</button></div><div id="composer" class="composer"><textarea id="input" rows="1" placeholder="输入股票或研究问题，Enter 发送…"></textarea><div class="compose-foot"><span class="context-tag">宁德时代 300750</span><span class="context-tag">近 3 月</span><span class="compose-hint">Shift + Enter 换行</span><button id="stopBtn" class="stop" title="停止生成">■</button><button id="sendBtn" class="send" title="发送">↑</button></div></div></footer>
   </section>
-
-  <section id="chatBox" class="chat" aria-live="polite"></section>
-
-  <section class="composer">
-    <textarea id="input" placeholder="输入问题，按 Enter 发送，Shift + Enter 换行"></textarea>
-    <div class="actions">
-      <button id="sendBtn" type="button">发送</button>
-    </div>
-  </section>
+  <aside id="rightPanel" class="side right" aria-label="执行流程">
+    <header class="research-head"><button id="closeResearch" class="close-panel" aria-label="关闭">×</button><h2>思考与工具调用</h2><p>按每轮提问实时展示 Agent 执行流程</p></header>
+    <div id="workflowList" class="workflow-list"><div class="workflow-empty"><div class="workflow-empty-icon">⌁</div><b>暂无执行记录</b><p>发送问题后，这里会实时显示思考步骤和工具调用。</p></div></div>
+  </aside>
 </main>
-
+<div id="mask" class="drawer-mask"></div>
+<dialog id="devDialog" class="dev-dialog"><div class="dialog-head"><b>开发设置</b><button id="closeDev" style="border:0;background:transparent">×</button></div><div class="dialog-body"><div class="field"><label for="sessionId">Session ID</label><input id="sessionId" value="stream-chat-001" /></div><div class="field"><label for="userId">User ID</label><input id="userId" value="demo-user" /></div></div><div class="dialog-actions"><button id="saveDev">保存</button></div></dialog>
 <script>
-  const chatBox = document.getElementById("chatBox");
-  const inputEl = document.getElementById("input");
-  const sendBtn = document.getElementById("sendBtn");
-  const clearBtn = document.getElementById("clearBtn");
-  const sessionIdEl = document.getElementById("sessionId");
-  const userIdEl = document.getElementById("userId");
-
-  function scrollToBottom() {
-    chatBox.scrollTop = chatBox.scrollHeight;
+  const $=s=>document.querySelector(s), chatBox=$("#chatBox"), inputEl=$("#input"), sendBtn=$("#sendBtn"), stopBtn=$("#stopBtn"), composer=$("#composer");
+  let controller=null,lastInput="",generating=false;
+  const escapeText=(el,text)=>{el.textContent=text||""};
+  function scrollBottom(){chatBox.scrollTop=chatBox.scrollHeight}
+  function renderContent(container,content){container.innerHTML="";let list=null;for(const raw of String(content||"").split(/\r?\n/)){const line=raw.trim();if(!line){list=null;continue}if(line.startsWith("### ")){const h=document.createElement("h3");escapeText(h,line.slice(4));container.append(h);list=null}else if(line.startsWith("- ")){if(!list){list=document.createElement("ul");container.append(list)}const li=document.createElement("li");escapeText(li,line.slice(2));list.append(li)}else{const p=document.createElement("p");escapeText(p,line);container.append(p);list=null}}}
+  function appendMessage(role,content){$("#welcome")?.remove();const wrap=document.createElement("article");wrap.className="message "+role;if(role==="user"){const bubble=document.createElement("div");bubble.className="bubble";escapeText(bubble,content);wrap.append(bubble)}else{wrap.innerHTML='<div class="assistant-head"><span class="bot">S</span><b>StockMind</b><span>· AI 研究助手</span></div><div class="answer"></div>';renderContent(wrap.querySelector(".answer"),content)}chatBox.append(wrap);scrollBottom();return{wrap,text:wrap.querySelector(".answer")}}
+  function setText(m,text){if(m?.text){renderContent(m.text,text);scrollBottom()}}
+  function readSseStream(resp,handlers){return(async()=>{const reader=resp.body.getReader(),decoder=new TextDecoder();let buffer="";const dispatch=block=>{if(!block.trim())return;let name="message",lines=[];for(const line of block.split(/\r?\n/)){if(line.startsWith("event:"))name=line.slice(6).trim();else if(line.startsWith("data:"))lines.push(line.slice(5).trimStart())}if(!lines.length)return;let data=lines.join("\n");try{data=JSON.parse(data)}catch(_){};handlers[name]?.(data)};while(true){const r=await reader.read();if(r.done)break;buffer+=decoder.decode(r.value,{stream:true});const blocks=buffer.split(/\r?\n\r?\n/);buffer=blocks.pop()||"";blocks.forEach(dispatch)}buffer+=decoder.decode();dispatch(buffer)})()}
+  function typingController(message){let text="",timer,queue=[];const tick=()=>{const c=queue.shift();if(c){text+=c;setText(message,text)}else{clearInterval(timer);timer=null}};return{push(d){queue.push(...Array.from(d||""));timer||=(setInterval(tick,16))},finish(final){if(!text&&!queue.length&&final){text=final;setText(message,text)}},hasText:()=>Boolean(text||queue.length)}}
+  function workflowRun(query){
+    const list=$("#workflowList");list.querySelector(".workflow-empty")?.remove();
+    list.querySelectorAll(".run-card.active").forEach(card=>card.classList.remove("active"));
+    const card=document.createElement("section");card.className="run-card active";
+    card.innerHTML='<div class="run-head"><b class="run-query"></b><div class="run-meta"><span class="run-time"></span><span class="run-status">执行中</span></div></div><div class="flow"></div><div class="run-duration"></div>';
+    escapeText(card.querySelector(".run-query"),query);card.querySelector(".run-time").textContent=new Date().toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"});list.prepend(card);
+    const started=Date.now(),flow=card.querySelector(".flow"),planSeen=new Set(),planStepEls=new Map();let lastText="",planGroup=null;
+    function ensurePlan(data){
+      if(planGroup)return planGroup;
+      planGroup=document.createElement("section");planGroup.className="plan-group";
+      planGroup.innerHTML='<div class="plan-title"><b>执行计划</b><span></span></div><div class="plan-method">执行方法：按步骤顺序调用工具；失败时进入 revise_plan 修订</div><div class="plan-steps"></div>';
+      planGroup.querySelector(".plan-title span").textContent=(data?.plan_id||"计划执行中")+(data?.step_count?" · "+data.step_count+" 步":"");flow.append(planGroup);return planGroup;
+    }
+    function renderPlan(data){
+      const event=data.planEvent||data.event||"",key=[event,data.step_id||data.plan_id||"",data.step_name||""].join("|");if(planSeen.has(key))return;planSeen.add(key);
+      const group=ensurePlan(data),steps=group.querySelector(".plan-steps");
+      if(event==="plan_created"&&Array.isArray(data.steps)){
+        data.steps.forEach((item,index)=>{const id=item.step_id||"step_"+(index+1);if(planStepEls.has(id))return;const el=document.createElement("div");el.className="plan-step pending";el.dataset.stepId=id;el.innerHTML='<div class="plan-step-head"><b></b><span class="plan-step-state">待执行</span></div><div class="plan-step-desc"></div><span class="plan-step-tool"></span><div class="plan-step-expected"></div>';escapeText(el.querySelector("b"),(index+1)+". "+(item.name||id));escapeText(el.querySelector(".plan-step-desc"),item.description||"执行计划步骤");const tool=el.querySelector(".plan-step-tool");if(item.tool)escapeText(tool,"方法 · "+item.tool);else tool.remove();const expected=el.querySelector(".plan-step-expected");if(item.expected_outcome)escapeText(expected,"预期 · "+item.expected_outcome);else expected.remove();steps.append(el);planStepEls.set(id,el)})
+      }
+      const id=data.step_id,el=id?planStepEls.get(id):null;if(el){const states={step_started:["running","执行中"],step_completed:["completed","已完成"],step_failed:["failed","失败"],step_failed_expected_mismatch:["failed","未达预期"]},state=states[event];if(state){el.className="plan-step "+state[0];el.querySelector(".plan-step-state").textContent=state[1]}}
+      if(event==="plan_completed")group.querySelector(".plan-title span").textContent=(data.plan_id||"执行计划")+" · 已完成";
+    }
+    function addStep(data,fallbackType){
+      if(data?.category==="plan"||String(data?.message||"").startsWith("计划事件：")||String(data?.message||"").startsWith("计划步骤：")){renderPlan(data);return}
+      const raw=typeof data==="string"?data:(data?.message||data?.description||data?.stage||data?.toolName||"");if(!raw||raw===lastText)return;lastText=raw;
+      const namedTool=data?.toolName||data?.tool||data?.name||"",match=raw.match(/(?:调用工具|工具)[：:]\s*([\w.-]+)/i),tool=namedTool||(match?.[1]||"");const looksTool=Boolean(tool)||/工具|tool|调用|查询|检索|执行/i.test(raw),type=looksTool?"tool":fallbackType||"thought";
+      flow.querySelectorAll(":scope > .flow-step.running").forEach(x=>x.classList.remove("running"));const step=document.createElement("div");step.className="flow-step "+type+" running";const icon=type==="tool"?"⌘":type==="answer"?"✓":"◇",title=type==="tool"?"工具调用":type==="answer"?"生成回答":"分析思考";step.innerHTML='<span class="step-icon">'+icon+'</span><div class="step-body"><b>'+title+'</b><p></p></div>';escapeText(step.querySelector("p"),raw);if(tool){const tag=document.createElement("span");tag.className="step-tool";escapeText(tag,tool);step.querySelector(".step-body").append(tag)}flow.append(step);card.scrollIntoView({block:"nearest"})
+    }
+    return{event:data=>addStep(data,"thought"),answer(){addStep("已整理分析结果并生成回答","answer")},finish(status="done"){flow.querySelectorAll(":scope > .flow-step.running").forEach(x=>x.classList.remove("running"));card.classList.remove("active");card.classList.add(status);card.querySelector(".run-status").textContent=status==="done"?"已完成":status==="stopped"?"已停止":"执行失败";card.querySelector(".run-duration").textContent="耗时 "+((Date.now()-started)/1000).toFixed(1)+" 秒"},clear(){flow.innerHTML=""}}
   }
-
-  function appendMessage(role, content) {
-    const wrap = document.createElement("div");
-    wrap.className = "message " + role;
-    const meta = document.createElement("span");
-    meta.className = "meta";
-    meta.textContent = role === "user" ? "你" : "助手";
-    const thinking = document.createElement("div");
-    thinking.className = "thinking";
-    const text = document.createElement("div");
-    text.className = "content";
-    renderMessageContent(text, content || "", role === "assistant");
-    wrap.appendChild(meta);
-    if (role === "assistant") {
-      wrap.appendChild(thinking);
-    }
-    wrap.appendChild(text);
-    chatBox.appendChild(wrap);
-    scrollToBottom();
-    return { wrap, thinking, text };
-  }
-
-  function setThinking(message, line) {
-    if (!message || !message.thinking) return;
-    message.thinking.textContent = line || "";
-    scrollToBottom();
-  }
-
-  function clearThinking(message) {
-    setThinking(message, "");
-  }
-
-  function setMessageText(message, text) {
-    if (!message || !message.text) return;
-    renderMessageContent(message.text, text || "", true);
-    scrollToBottom();
-  }
-
-  function renderMessageContent(container, content, rich) {
-    container.innerHTML = "";
-    const text = content || "";
-    if (!rich) {
-      container.textContent = text;
-      return;
-    }
-    const lines = text.split(/\r?\n/);
-    let paragraph = [];
-    let list = null;
-
-    function flushParagraph() {
-      if (paragraph.length === 0) return;
-      const p = document.createElement("p");
-      p.textContent = paragraph.join(" ");
-      container.appendChild(p);
-      paragraph = [];
-    }
-
-    function ensureList() {
-      if (!list) {
-        flushParagraph();
-        list = document.createElement("ul");
-        container.appendChild(list);
-      }
-      return list;
-    }
-
-    function closeList() {
-      list = null;
-    }
-
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (!line) {
-        flushParagraph();
-        closeList();
-        continue;
-      }
-      if (line.startsWith("### ")) {
-        flushParagraph();
-        closeList();
-        const h = document.createElement("h3");
-        h.textContent = line.slice(4).trim();
-        container.appendChild(h);
-        continue;
-      }
-      if (line.startsWith("- ")) {
-        const li = document.createElement("li");
-        li.textContent = line.slice(2).trim();
-        ensureList().appendChild(li);
-        continue;
-      }
-      closeList();
-      paragraph.push(line);
-    }
-    flushParagraph();
-    if (!container.hasChildNodes()) {
-      container.textContent = text;
-    }
-  }
-
-  function pickReplyText(data) {
-    if (data && data.message && typeof data.message.content === "string" && data.message.content.trim()) {
-      return data.message.content;
-    }
-    return data && data.reply ? data.reply : "";
-  }
-
-  async function readSseStream(resp, handlers) {
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-    let buffer = "";
-
-    function dispatchBlock(block) {
-      if (!block.trim()) return;
-      let eventName = "message";
-      const dataLines = [];
-      for (const line of block.split(/\r?\n/)) {
-        if (line.startsWith("event:")) {
-          eventName = line.slice(6).trim();
-        } else if (line.startsWith("data:")) {
-          dataLines.push(line.slice(5).trimStart());
-        }
-      }
-      if (dataLines.length === 0) return;
-      const rawData = dataLines.join("\n");
-      let data = rawData;
-      try {
-        data = JSON.parse(rawData);
-      } catch (_) {
-      }
-      if (handlers[eventName]) {
-        handlers[eventName](data);
-      }
-    }
-
-    while (true) {
-      const result = await reader.read();
-      if (result.done) break;
-      buffer += decoder.decode(result.value, { stream: true });
-      const blocks = buffer.split(/\r?\n\r?\n/);
-      buffer = blocks.pop() || "";
-      for (const block of blocks) {
-        dispatchBlock(block);
-      }
-    }
-    buffer += decoder.decode();
-    if (buffer.trim()) {
-      dispatchBlock(buffer);
-    }
-  }
-
-  function createTypingController(message) {
-    let text = "";
-    let done = false;
-    let timer = null;
-    const queue = [];
-
-    function tick() {
-      const next = queue.shift();
-      if (next) {
-        text += next;
-        setMessageText(message, text);
-        return;
-      }
-      window.clearInterval(timer);
-      timer = null;
-      if (done) {
-        clearThinking(message);
-      }
-    }
-
-    function schedule() {
-      if (!timer) {
-        timer = window.setInterval(tick, 18);
-      }
-    }
-
-    return {
-      push(delta) {
-        for (const char of Array.from(delta || "")) {
-          queue.push(char);
-        }
-        schedule();
-      },
-      finish(finalText) {
-        done = true;
-        if (!text && queue.length === 0 && finalText) {
-          text = finalText;
-          setMessageText(message, text);
-        }
-        if (!timer && queue.length === 0) {
-          clearThinking(message);
-        }
-      },
-      hasText() {
-        return Boolean(text || queue.length > 0);
-      }
-    };
-  }
-
-  async function sendMessage() {
-    const input = inputEl.value.trim();
-    const sessionId = sessionIdEl.value.trim();
-    const userId = userIdEl.value.trim();
-    if (!input || sendBtn.disabled) return;
-
-    appendMessage("user", input);
-    inputEl.value = "";
-    sendBtn.disabled = true;
-    const assistant = appendMessage("assistant", "");
-    const typing = createTypingController(assistant);
-    setThinking(assistant, "已发送请求，等待 Agent 开始处理");
-
-    try {
-      const resp = await fetch("/api/agent/chat/model-stream", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input, sessionId, userId })
-      });
-      if (!resp.ok) {
-        setMessageText(assistant, "请求失败: " + await resp.text());
-        clearThinking(assistant);
-        return;
-      }
-      await readSseStream(resp, {
-        process(data) {
-          const message = data && data.message ? data.message : String(data || "");
-          setThinking(assistant, message);
-        },
-        reply_delta(data) {
-          typing.push(data && data.text ? data.text : "");
-        },
-        done(data) {
-          typing.finish(pickReplyText(data));
-        },
-        error(data) {
-          setMessageText(assistant, "请求异常: " + ((data && data.message) || String(data || "")));
-          clearThinking(assistant);
-        }
-      });
-      if (!typing.hasText()) {
-        setMessageText(assistant, "空响应");
-        clearThinking(assistant);
-      }
-    } catch (e) {
-      setMessageText(assistant, "请求异常: " + (e && e.message ? e.message : String(e)));
-      clearThinking(assistant);
-    } finally {
-      sendBtn.disabled = false;
-      inputEl.focus();
-    }
-  }
-
-  sendBtn.addEventListener("click", sendMessage);
-  inputEl.addEventListener("keydown", function (e) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
-  });
-  clearBtn.addEventListener("click", function () {
-    chatBox.innerHTML = "";
-  });
-  inputEl.focus();
+  function setGenerating(value){generating=value;composer.classList.toggle("generating",value);inputEl.disabled=value}
+  async function sendMessage(override){const input=(override??inputEl.value).trim();if(!input||generating)return;lastInput=input;appendMessage("user",input);inputEl.value="";inputEl.style.height="auto";setGenerating(true);const assistant=appendMessage("assistant","");const typing=typingController(assistant);const run=workflowRun(input);run.event("正在理解问题并准备研究步骤");controller=new AbortController();let runStatus="done";try{const resp=await fetch("/api/agent/chat/model-stream",{method:"POST",headers:{"Content-Type":"application/json"},signal:controller.signal,body:JSON.stringify({input,sessionId:$("#sessionId").value.trim(),userId:$("#userId").value.trim(),requestId:crypto.randomUUID?.()||String(Date.now())})});if(!resp.ok)throw new Error(await resp.text()||`HTTP ${resp.status}`);await readSseStream(resp,{process:d=>run.event(d),status:d=>run.event(d),reply_delta:d=>typing.push(d?.text||""),text_delta:d=>typing.push(d?.text||""),done:d=>{run.answer();typing.finish(d?.message?.content||d?.reply||"")},error:d=>{throw new Error(d?.message||String(d||"请求异常"))}});if(!typing.hasText())setText(assistant,"未收到有效响应，请稍后重试。") }catch(e){if(e.name==="AbortError"){runStatus="stopped";setText(assistant,"已停止生成。你可以调整问题后重新发送。") }else{runStatus="error";run.event("执行异常："+(e.message||e));setText(assistant,"连接出现问题："+(e.message||e));const retry=document.createElement("button");retry.className="chip";retry.textContent="重新尝试";retry.onclick=()=>sendMessage(lastInput);assistant.wrap.append(retry)}}finally{run.finish(runStatus);controller=null;setGenerating(false);inputEl.focus()}}
+  sendBtn.onclick=()=>sendMessage();stopBtn.onclick=()=>controller?.abort();inputEl.onkeydown=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage()}};inputEl.oninput=()=>{inputEl.style.height="auto";inputEl.style.height=Math.min(inputEl.scrollHeight,130)+"px"};
+  document.querySelectorAll("[data-prompt]").forEach(b=>b.onclick=()=>sendMessage(b.dataset.prompt));document.querySelectorAll("[data-prefix]").forEach(b=>b.onclick=()=>{document.querySelectorAll("[data-prefix]").forEach(x=>x.classList.remove("active"));b.classList.add("active");inputEl.value=b.dataset.prefix;inputEl.focus()});
+  $("#newChatBtn").onclick=()=>{chatBox.innerHTML='<div id="welcome" class="welcome"><span class="welcome-badge">新研究</span><h1>开始一个新的分析</h1><p>输入股票名称、代码或你关心的研究问题。</p></div>';$("#workflowList").innerHTML='<div class="workflow-empty"><div class="workflow-empty-icon">⌁</div><b>暂无执行记录</b><p>发送问题后，这里会实时显示思考步骤和工具调用。</p></div>';$("#sessionId").value="stream-chat-"+Date.now();closeDrawers()};
+  const left=$("#leftPanel"),right=$("#rightPanel"),mask=$("#mask");function closeDrawers(){left.classList.remove("open");right.classList.remove("open");mask.classList.remove("open")}$("#navToggle").onclick=()=>{left.classList.add("open");mask.classList.add("open")};$("#researchToggle").onclick=()=>{right.classList.add("open");mask.classList.add("open")};$("#closeResearch").onclick=closeDrawers;mask.onclick=closeDrawers;
+  const dialog=$("#devDialog");$("#devBtn").onclick=()=>dialog.showModal();$("#closeDev").onclick=()=>dialog.close();$("#saveDev").onclick=()=>dialog.close();
+  document.addEventListener("keydown",e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==="k"){e.preventDefault();$("#stockSearch").focus()}if(e.key==="Escape")closeDrawers()});inputEl.focus();
 </script>
 </body>
 </html>
