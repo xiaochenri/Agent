@@ -19,6 +19,7 @@
         <module>javascope-agent-core</module>
         <module>javascope-agent-model-openai</module>
         <module>javascope-agent-spring-boot-starter</module>
+        <module>javascope-user</module>
     </modules>
 
     <properties>

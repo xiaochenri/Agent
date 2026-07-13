@@ -5,6 +5,7 @@ import com.stockmind.common.vector.DistanceMetric;
 import com.stockmind.common.vector.OceanBaseVectorStore;
 import com.stockmind.common.vector.TextVectorBuilder;
 import com.stockmind.common.vector.VectorSearchResult;
+import com.stockmind.application.market.StockTimeWindowResolver;
 
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -20,7 +21,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class ResearchEvidenceTools extends StockToolSupport {
     private static final String NEWS_SCHEMA = """
-            {"type":"object","properties":{"keyword":{"type":"string"},"time_window":{"type":"string"}},"required":["keyword"]}
+            {"type":"object","properties":{"keyword":{"type":"string"},"time_window":{"type":"string"},"start_date":{"type":"string","description":"yyyy-MM-dd"},"end_date":{"type":"string","description":"yyyy-MM-dd"}},"required":["keyword"]}
             """;
     private static final String KNOWLEDGE_SCHEMA = """
             {"type":"object","properties":{"query":{"type":"string"},"symbol":{"type":"string"},"top_k":{"type":"integer"}},"required":["query"]}
@@ -42,9 +43,14 @@ public class ResearchEvidenceTools extends StockToolSupport {
     public String newsSearch(Map<String, Object> input, String raw) {
         String keyword = firstNonBlank(asString(input.get("keyword")), raw);
         if (keyword.isBlank()) return fail("news_search", "keyword 不能为空", false);
+        StockTimeWindowResolver.ResolvedTimeWindow window = StockTimeWindowResolver.resolveNews(
+                asString(input.get("start_date")), asString(input.get("end_date")), asString(input.get("time_window")));
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("keyword", keyword);
-        data.put("time_window", firstNonBlank(asString(input.get("time_window")), "未指定"));
+        data.put("time_window", window.display());
+        data.put("start_date", window.startDate().toString());
+        data.put("end_date", window.endDate().toString());
+        data.put("warnings", window.warnings());
         data.put("source", "stockmind_news");
         data.put("items", List.of(Map.of("id", "news-1", "title", keyword + " 的市场关注度变化", "published_at", LocalDate.now().minusDays(2).toString(), "summary", "市场关注度与相关事件摘要。")));
         return success("news_search", data, "[\"keyword 非空\",\"返回结构化新闻条目\"]");

@@ -4,9 +4,9 @@ spring:
   application:
     name: stockmind-agent
   datasource:
-    url:
-    username:
-    password:
+    url: jdbc:mysql://101.35.234.55:3306/flower-test?useSSL=false&serverTimezone=UTC&characterEncoding=UTF-8
+    username: root
+    password: Szcs_666_!@#$
   data:
     redis:
       host: localhost
@@ -17,6 +17,11 @@ management:
     web:
       exposure:
         include: health,info
+
+javascope:
+  user:
+    # 开发环境固定用户；接入 Spring Security 后由 CurrentUserProvider 替换。
+    development-user-id: ${JAVASCOPE_DEVELOPMENT_USER_ID:chat-user}
 
 stockmind:
   knowledge:

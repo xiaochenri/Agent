@@ -186,14 +186,17 @@ public class InputRouter {
         return "task";
     }
 
-    /** 非任务不进入执行链；任务若未明确为 direct，则保守要求先规划。 */
+    /** 非任务不进入执行链；任务仅接受 direct/react/planned，未知值保守要求先规划。 */
     private String normalizeExecutionMode(String route, Object executionModeObj) {
         if (!"task".equals(route)) {
             return "none";
         }
         String normalized = json.normalize(
                 executionModeObj == null ? "" : String.valueOf(executionModeObj), "planned").toLowerCase();
-        return "direct".equals(normalized) ? "direct" : "planned";
+        if ("direct".equals(normalized) || "react".equals(normalized) || "planned".equals(normalized)) {
+            return normalized;
+        }
+        return "planned";
     }
 
     /**

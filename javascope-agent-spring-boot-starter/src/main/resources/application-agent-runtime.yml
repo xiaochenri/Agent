@@ -2,11 +2,19 @@ java:
   agent-runtime:
     provider: ${AGENT_RUNTIME_PROVIDER:openai}
     model: ${AGENT_RUNTIME_MODEL:deepseek-chat}
-    api-key: ${AGENT_RUNTIME_API_KEY:}
+    api-key: ${AGENT_RUNTIME_API_KEY:sk-d6923b598ef1456d9f7785ba50c18b57}
     base-url: ${AGENT_RUNTIME_BASE_URL:https://api.deepseek.com/v1}
     system-instruction: 你是通用任务执行器，输出必须为 JSON。
-    max-rounds: 3
+    # max-rounds 仅作为未知模式和旧配置的兼容回退。
+    max-rounds: ${AGENT_RUNTIME_MAX_ROUNDS:10}
+    direct-max-rounds: ${AGENT_RUNTIME_DIRECT_MAX_ROUNDS:2}
+    planned-max-rounds: ${AGENT_RUNTIME_PLANNED_MAX_ROUNDS:4}
+    react-max-rounds: ${AGENT_RUNTIME_REACT_MAX_ROUNDS:6}
+    react-max-tool-calls: ${AGENT_RUNTIME_REACT_MAX_TOOL_CALLS:5}
     plan-max-retry: 2
     final-answer-validation-enabled: ${AGENT_RUNTIME_FINAL_ANSWER_VALIDATION_ENABLED:false}
     temperature: 0.2
     timeout-seconds: 60
+    context-max-prompt-characters: ${AGENT_RUNTIME_CONTEXT_MAX_PROMPT_CHARACTERS:24000}
+    context-max-history-items: ${AGENT_RUNTIME_CONTEXT_MAX_HISTORY_ITEMS:6}
+    context-max-evidence-items: ${AGENT_RUNTIME_CONTEXT_MAX_EVIDENCE_ITEMS:8}

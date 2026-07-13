@@ -15,14 +15,23 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
     public String buildRoutePrompt(String systemPrompt, String input) {
         return """
                 你是入口语义路由器。仅输出 JSON：
-                {"route":"chat|meta|task","execution_mode":"direct|planned|none","confidence":0-1,"reason":""}
+                {"route":"chat|meta|task","execution_mode":"direct|react|planned|none","confidence":0-1,"reason":""}
                 路由规则：
                 - chat：寒暄闲聊、情绪表达、无需任务执行的轻对话
                 - meta：询问你是谁、你能做什么、如何使用、能力边界、流程说明
                 - task：需要分析、查询、推荐、执行、检索、规划等任务处理
-                - task 的 execution_mode：direct 仅用于对象明确、一个事实工具即可完成的查询；planned 用于分析、推荐、比较、需要多源证据或多步执行的任务
+                - task/direct：对象明确，创建计划前就能确定只需一个事实工具调用
+                - task/planned：完整工具路径可在执行前确定；计划中的每一步都能预先指定 tool、input 和依赖，适合固定计算、转换、查询链及强调审计的流程
+                - task/react：目标明确，但下一工具取决于上一工具的观察结果，无法在执行前可靠确定完整 tool+input 链；适合原因调查、异常诊断、证据核验和自适应检索
+                - 多步骤不自动等于 planned；如果工具顺序必须根据中间结果调整，必须选择 react
+                - 分析、推荐或多源证据任务只有在完整工具链可以预先确定时才选择 planned，否则选择 react
                 - chat/meta 的 execution_mode 必须为 none
                 - 不确定时优先输出 task
+                判定示例：
+                - “查询 600519 所属行业” => task/direct
+                - “读取指定财报后计算 EPS 和 PE” => task/planned
+                - “调查 600519 最近为什么下跌” => task/react
+                - “核验这条市场传闻是否可信” => task/react
                 约束：
                 - 只允许 route=chat/meta/task
                 - confidence 必须在 0 到 1 之间
@@ -81,7 +90,7 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                 规则：
                 - 需要调用工具时，填写 tool_calls；不需要时 tool_calls=[]
                 - tool_calls.name 必须来自“可用工具”
-                - 当前执行模式=%s：direct 时只完成单步事实查询，取得结果后输出 final_answer；planned 且最新计划为空时只能调用 create_plan，不得调用普通业务工具
+                - 当前执行模式=%s：direct 只完成一个已知事实工具调用；react 根据最新观察动态选择下一业务工具；planned 且最新计划为空时只能调用 create_plan
                 - 先做意图判定：非任务型请求（身份问答、能力介绍、闲聊问候）禁止进入工具链，直接自然回答
                 - 任务型请求（analysis/recommendation/query_with_constraints/execution_request）才允许进入工具链
                 - 若可用工具中包含 clarify_requirement，按信息缺口分级：P0（对象缺失/不可逆动作对象缺失）必须澄清；P1（存在歧义）可先按默认执行并轻量确认；P2（风格偏好）直接执行
@@ -89,10 +98,12 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                 - 调用 clarify_requirement 成功后，下一轮必须停止工具调用并仅输出 final_answer（tool_calls=[]）
                 - 澄清阶段 final_answer 建议模板：先说明已理解的任务对象与目标，再给“我已识别/还缺关键信息/可选关注维度/最短输入示例”
                 - 澄清阶段 final_answer 映射：core_conclusions=模板主结论与已识别项；key_evidence=已识别信息+缺失信息；risk_points=继续执行风险；next_actions=明确下一步操作（补充缺失字段+最短回复示例+可选维度建议）
-                - direct 模式不得调用 create_plan/revise_plan；planned 模式在已有计划后按计划状态继续推进
+                - direct/react 模式不得调用 create_plan/revise_plan；planned 模式在已有计划后按计划状态继续推进
+                - react 模式每轮必须先检查执行日志：证据不足时只选择一个最能减少不确定性的业务工具，观察结果后再决定下一动作；证据足够时立即输出 final_answer
+                - react 模式不得预先枚举并机械执行固定工具链，不得重复相同 tool+input；下一动作必须由已有观察支持
                 - 计划执行中出现步骤失败、前置依赖阻塞、执行结果与预期不一致、或校验反馈 suggest_replan=true 时，优先调用 revise_plan；仅当当前无计划时调用 create_plan
                 - 不允许在存在失败反馈后继续沿用原计划硬执行；必须先 revise_plan 再继续
-                - 结论无法从执行日志中找到证据时，不要直接给最终结论；先调用规划类工具或计划修正类工具补齐证据
+                - 结论无法从执行日志中找到证据时，不要直接给最终结论；planned 使用规划或计划修正工具，react 使用合适的业务工具继续收集证据
                 - 历史记忆中 type=business_decision 是业务工具给出的决策状态：recommended_action=FINAL_ANSWER 且 repeat_policy=REUSE_EXISTING_RESULT 时，应优先复用已完成范围的证据输出 final_answer；仅当用户问题提出了 completed_scopes 以外的新证据需求、时间范围/对象/口径发生变化，或 missing_scopes 非空时，才继续调用工具
                 - business_decision 仅提供决策依据，不是运行时强制指令；请结合用户问题自行判断
                 - business_decision 如含 answer_context，final_answer 必须以其中的 core_conclusions、key_evidence、risk_points、next_actions 为主要材料，改写为面向用户的自然结论；严禁在最终回答中提及 business_decision、completed_scopes、历史记忆、计划步骤或“应当输出最终答案”等内部过程

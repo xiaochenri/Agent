@@ -2,6 +2,7 @@ package com.stockmind.application.analysis;
 
 import com.stockmind.application.market.HistoricalBarsQuery;
 import com.stockmind.application.market.MarketDataProvider;
+import com.stockmind.application.market.StockTimeWindowResolver;
 import com.stockmind.domain.market.AdjustmentMode;
 import com.stockmind.domain.market.BarDataset;
 import com.stockmind.domain.market.BarInterval;
@@ -256,24 +257,18 @@ public class TechnicalAnalysisService {
      */
     private BarDataset loadRequested(String symbol, String start, String end, String adjustment) {
         if (symbol == null || symbol.isBlank()) throw new IllegalArgumentException("symbol 不能为空");
-        LocalDate today = LocalDate.now();
-        LocalDate requestedEnd = parseDate(end, today);
-        LocalDate requestedStart = parseDate(start, requestedEnd.minusDays(90));
-        if (requestedStart.isAfter(requestedEnd)) throw new IllegalArgumentException("start_date 不能晚于 end_date");
-        boolean staleRange = requestedEnd.isBefore(today.minusDays(7));
-        LocalDate endDate = staleRange ? today : requestedEnd;
-        LocalDate startDate = staleRange ? endDate.minusDays(30) : requestedStart;
+        StockTimeWindowResolver.ResolvedTimeWindow window = StockTimeWindowResolver.resolve(start, end);
         BarDataset dataset = marketDataProvider.loadBars(new HistoricalBarsQuery(
-                symbol.trim().toUpperCase(Locale.ROOT), BarInterval.DAY_1, startDate, endDate,
+                symbol.trim().toUpperCase(Locale.ROOT), BarInterval.DAY_1, window.startDate(), window.endDate(),
                 parseAdjustment(adjustment)));
         if (dataset.bars().isEmpty()) {
             throw new IllegalArgumentException("指定时间范围内没有可用的已收盘K线");
         }
-        if (!staleRange) {
+        if (window.warnings().isEmpty()) {
             return dataset;
         }
         List<String> warnings = new ArrayList<>(dataset.warnings());
-        warnings.add("请求截止日期 " + requestedEnd + " 已自动更新为当前日期 " + endDate + " 的近一个月决策窗口。");
+        warnings.addAll(window.warnings());
         return new BarDataset(dataset.datasetId(), dataset.bars(), dataset.source(), dataset.asOf(), List.copyOf(warnings));
     }
 
@@ -291,14 +286,6 @@ public class TechnicalAnalysisService {
         List<String> warnings = new ArrayList<>(decisionWindow.warnings());
         warnings.add("技术指标已使用额外历史数据完成预热计算。");
         return new BarDataset(dataset.datasetId(), dataset.bars(), dataset.source(), dataset.asOf(), List.copyOf(warnings));
-    }
-
-    private LocalDate parseDate(String value, LocalDate fallback) {
-        try {
-            return value == null || value.isBlank() ? fallback : LocalDate.parse(value);
-        } catch (Exception e) {
-            throw new IllegalArgumentException("日期格式必须为 yyyy-MM-dd");
-        }
     }
 
     private AdjustmentMode parseAdjustment(String value) {

@@ -3,286 +3,300 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>stockmind-agent Architecture</title>
+  <meta name="description" content="StockMind Agent 当前系统架构与请求执行流程">
+  <title>StockMind · 系统架构与执行流程</title>
   <style>
     :root {
-      --bg: #f7f9fc;
-      --text: #172033;
-      --muted: #5b6578;
-      --line: #8390a6;
-      --runtime: #e8f2ff;
-      --runtime-border: #5b8fd9;
-      --biz: #ecf8f1;
-      --biz-border: #4d9b6b;
-      --entry: #fff7e8;
-      --entry-border: #c8912d;
-      --card: #ffffff;
-      --shadow: 0 8px 24px rgba(23, 32, 51, 0.08);
+      --ink: #17211b;
+      --muted: #687169;
+      --paper: #f4f1e9;
+      --card: rgba(255, 255, 255, .76);
+      --line: #d9d5c9;
+      --green: #0e6b4f;
+      --green-soft: #dcebe3;
+      --amber: #bd7024;
+      --amber-soft: #f5e5d2;
+      --blue: #426889;
+      --blue-soft: #dfe9f1;
+      --purple: #6e5b87;
+      --purple-soft: #e9e2ef;
+      --shadow: 0 22px 60px rgba(42, 52, 43, .09);
     }
 
-    * {
-      box-sizing: border-box;
-    }
-
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
     body {
       margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-        "Microsoft YaHei", Arial, sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 90% 4%, rgba(189,112,36,.12), transparent 28rem),
+        radial-gradient(circle at 2% 36%, rgba(14,107,79,.10), transparent 32rem),
+        var(--paper);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
     }
 
-    main {
-      width: min(1280px, 100%);
-      margin: 0 auto;
-      padding: 28px 20px 36px;
-    }
+    button { font: inherit; }
+    .shell { width: min(1440px, 100%); margin: auto; padding: 28px clamp(18px, 4vw, 58px) 64px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+    .brand { display: flex; align-items: center; gap: 12px; font-weight: 760; letter-spacing: -.02em; }
+    .mark { width: 36px; height: 36px; display: grid; place-items: center; color: #fff; background: var(--green); border-radius: 11px; box-shadow: 0 8px 18px rgba(14,107,79,.22); }
+    .mark::before { content: "S"; font-family: Georgia, serif; font-size: 21px; }
+    .version { color: var(--muted); font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace; border: 1px solid var(--line); border-radius: 999px; padding: 8px 11px; background: rgba(255,255,255,.48); }
 
-    h1 {
-      margin: 0 0 8px;
-      font-size: 28px;
-      line-height: 1.25;
-    }
+    .hero { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(290px, .65fr); gap: 38px; align-items: end; padding: 78px 0 48px; }
+    .eyebrow { margin: 0 0 18px; color: var(--green); font-size: 12px; font-weight: 800; letter-spacing: .15em; text-transform: uppercase; }
+    h1 { max-width: 900px; margin: 0; font-family: Georgia, "Songti SC", serif; font-size: clamp(42px, 7vw, 84px); font-weight: 500; line-height: .98; letter-spacing: -.055em; }
+    h1 em { color: var(--green); font-style: italic; }
+    .lede { max-width: 620px; margin: 25px 0 0; color: var(--muted); font-size: 16px; line-height: 1.8; }
+    .metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .metric { padding: 19px; border: 1px solid var(--line); border-radius: 18px; background: var(--card); backdrop-filter: blur(14px); }
+    .metric strong { display: block; margin-bottom: 7px; font: 500 28px/1 Georgia, serif; }
+    .metric span { color: var(--muted); font-size: 12px; }
 
-    .subtitle {
-      margin: 0 0 20px;
-      color: var(--muted);
-      font-size: 14px;
-    }
+    .toolbar { display: flex; justify-content: space-between; gap: 16px; align-items: center; padding: 9px; border: 1px solid rgba(217,213,201,.9); border-radius: 16px; background: rgba(244,241,233,.82); backdrop-filter: blur(18px); box-shadow: 0 10px 30px rgba(42,52,43,.07); }
+    .tabs { display: flex; gap: 6px; }
+    .tab { border: 0; border-radius: 11px; padding: 10px 15px; color: var(--muted); background: transparent; cursor: pointer; font-weight: 700; }
+    .tab[aria-selected="true"] { color: #fff; background: var(--ink); }
+    .hint { padding-right: 8px; color: var(--muted); font-size: 12px; }
+    .panel { display: none; padding-top: 26px; }
+    .panel.active { display: block; animation: rise .35s ease-out; }
+    @keyframes rise { from { opacity: 0; transform: translateY(7px); } }
 
-    .diagram-wrap {
-      overflow-x: auto;
-      background: var(--card);
-      border: 1px solid #dde4ef;
-      border-radius: 8px;
-      box-shadow: var(--shadow);
-    }
+    .canvas { overflow: hidden; border: 1px solid var(--line); border-radius: 24px; background: rgba(255,255,255,.63); box-shadow: var(--shadow); }
+    .canvas-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; padding: 26px 28px 21px; border-bottom: 1px solid var(--line); }
+    .canvas-head h2 { margin: 0 0 7px; font: 500 clamp(24px, 3vw, 34px)/1.15 Georgia, "Songti SC", serif; }
+    .canvas-head p { margin: 0; color: var(--muted); font-size: 13px; }
+    .legend { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 12px; color: var(--muted); font-size: 11px; }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
 
-    svg {
-      display: block;
-      min-width: 1180px;
-      width: 100%;
-      height: auto;
-    }
+    .architecture { display: grid; grid-template-columns: 1fr 2.15fr 1.15fr; gap: 14px; padding: 28px; min-width: 1050px; }
+    .lane { position: relative; padding: 18px; border: 1px solid; border-radius: 18px; }
+    .lane.entry { border-color: #e5c59f; background: rgba(245,229,210,.53); }
+    .lane.runtime { border-color: #b7ccdd; background: rgba(223,233,241,.52); }
+    .lane.business { border-color: #b9d3c5; background: rgba(220,235,227,.56); }
+    .lane h3 { margin: 0 0 5px; font-size: 15px; }
+    .lane > p { min-height: 34px; margin: 0 0 16px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .stack { display: grid; gap: 10px; }
+    .runtime-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; align-items: stretch; }
+    .node { position: relative; min-height: 76px; padding: 15px; border: 1px solid rgba(82,94,85,.15); border-radius: 13px; background: rgba(255,255,255,.82); box-shadow: 0 5px 16px rgba(42,52,43,.06); }
+    .node::after { content: "↓"; position: absolute; left: 50%; bottom: -18px; z-index: 2; color: #8a938c; font-weight: 700; }
+    .stack .node:last-child::after, .runtime-grid .node::after { display: none; }
+    .node strong { display: block; margin-bottom: 7px; font-size: 13px; line-height: 1.25; }
+    .node small { display: block; color: var(--muted); font-size: 10px; line-height: 1.5; }
+    .node.accent { color: #fff; border-color: var(--green); background: var(--green); }
+    .node.accent small { color: rgba(255,255,255,.72); }
+    .span-3 { grid-column: span 3; }
+    .span-2 { grid-column: span 2; }
+    .pipe { grid-column: span 3; display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; padding: 9px; border: 1px dashed #9cb4c6; border-radius: 13px; }
+    .pipe span { position: relative; padding: 8px 6px; text-align: center; color: var(--blue); font-size: 9px; font-weight: 750; background: rgba(255,255,255,.65); border-radius: 8px; }
+    .pipe span:not(:last-child)::after { content: "→"; position: absolute; right: -7px; color: #8197a8; }
+    .scroll { overflow-x: auto; }
 
-    .cluster-title {
-      font-size: 17px;
-      font-weight: 700;
-      fill: var(--text);
-    }
+    .flow { padding: 30px; min-width: 1040px; }
+    .flow-row { display: grid; grid-template-columns: repeat(7, minmax(110px, 1fr)); gap: 28px; align-items: center; }
+    .step { position: relative; min-height: 116px; display: flex; flex-direction: column; justify-content: space-between; padding: 16px; border: 1px solid var(--line); border-radius: 16px; background: rgba(255,255,255,.82); }
+    .step:not(:last-child)::after { content: "→"; position: absolute; right: -21px; top: 45%; color: #8a938c; font-size: 20px; }
+    .step b { width: 24px; height: 24px; display: grid; place-items: center; color: #fff; border-radius: 50%; background: var(--ink); font-size: 11px; }
+    .step strong { font-size: 13px; }
+    .step small { color: var(--muted); font-size: 10px; line-height: 1.45; }
+    .decision { margin: 26px auto; width: 160px; padding: 17px; text-align: center; color: #fff; background: var(--amber); border-radius: 16px; transform: rotate(2deg); font-size: 12px; font-weight: 800; }
+    .branches { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .branch { padding: 22px; border: 1px solid var(--line); border-radius: 18px; }
+    .branch.direct { background: rgba(245,229,210,.48); }
+    .branch.planned { background: rgba(220,235,227,.52); }
+    .branch-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 18px; }
+    .branch h3 { margin: 0; font: 500 21px/1.1 Georgia, "Songti SC", serif; }
+    .badge { padding: 5px 9px; border-radius: 999px; color: var(--muted); background: rgba(255,255,255,.72); font: 700 9px/1 ui-monospace, monospace; text-transform: uppercase; }
+    .mini-flow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 19px; }
+    .planned .mini-flow { grid-template-columns: repeat(6, 1fr); }
+    .mini { position: relative; min-height: 76px; padding: 12px; border-radius: 11px; background: rgba(255,255,255,.74); }
+    .mini:not(:last-child)::after { content: "→"; position: absolute; right: -15px; top: 38%; color: #8a938c; }
+    .mini strong { display: block; margin-bottom: 6px; font-size: 11px; }
+    .mini small { color: var(--muted); font-size: 9px; line-height: 1.4; }
+    .feedback { margin: 14px 0 0; padding: 10px 13px; color: var(--green); border: 1px dashed #98b8a6; border-radius: 10px; font-size: 10px; text-align: center; }
 
-    .node-title {
-      font-size: 14px;
-      font-weight: 700;
-      fill: var(--text);
-    }
+    .notes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 20px; }
+    .note { padding: 20px; border-top: 3px solid var(--green); border-radius: 3px 3px 16px 16px; background: rgba(255,255,255,.57); }
+    .note:nth-child(2) { border-color: var(--amber); }
+    .note:nth-child(3) { border-color: var(--purple); }
+    .note span { color: var(--muted); font: 700 10px/1 ui-monospace, monospace; }
+    .note h3 { margin: 11px 0 8px; font-size: 14px; }
+    .note p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
 
-    .node-subtitle {
-      font-size: 12px;
-      fill: var(--muted);
-    }
-
-    .small {
-      font-size: 11px;
-      fill: var(--muted);
-    }
-
-    .edge {
-      stroke: var(--line);
-      stroke-width: 2;
-      fill: none;
-      marker-end: url(#arrow);
-    }
-
-    .edge-soft {
-      stroke: #a7b1c3;
-      stroke-width: 1.8;
-      fill: none;
-      marker-end: url(#arrow-soft);
-    }
-
-    .legend {
-      display: flex;
-      gap: 16px;
-      flex-wrap: wrap;
-      margin-top: 14px;
-      color: var(--muted);
-      font-size: 13px;
-    }
-
-    .legend span {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .swatch {
-      width: 14px;
-      height: 14px;
-      border-radius: 3px;
-      display: inline-block;
-      border: 1px solid;
-    }
-
-    @media (max-width: 720px) {
-      main {
-        padding: 20px 12px 28px;
-      }
-
-      h1 {
-        font-size: 22px;
-      }
+    @media (max-width: 850px) {
+      .shell { padding-inline: 14px; }
+      .hero { grid-template-columns: 1fr; padding: 58px 6px 38px; }
+      .metrics { max-width: 500px; }
+      .hint { display: none; }
+      .canvas-head { align-items: flex-start; flex-direction: column; }
+      .legend { justify-content: flex-start; }
+      .branches, .notes { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
-  <main>
-    <h1>stockmind-agent 项目架构图</h1>
-    <p class="subtitle">`javascope-agent` 承担通用 Agent Runtime；`stockmind-*` 承担股票业务接入、HTTP 入口、记忆和知识库能力。</p>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="mark" aria-hidden="true"></span>StockMind Agent</div>
+      <span class="version">CURRENT SYSTEM · 2026.07</span>
+    </header>
 
-    <div class="diagram-wrap" aria-label="stockmind-agent architecture diagram">
-      <svg viewBox="0 0 1280 900" role="img">
-        <defs>
-          <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
-            <path d="M0,0 L0,6 L9,3 z" fill="#8390a6"></path>
-          </marker>
-          <marker id="arrow-soft" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
-            <path d="M0,0 L0,6 L9,3 z" fill="#a7b1c3"></path>
-          </marker>
-          <filter id="nodeShadow" x="-20%" y="-20%" width="140%" height="140%">
-            <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#172033" flood-opacity="0.12"></feDropShadow>
-          </filter>
-        </defs>
+    <section class="hero">
+      <div>
+        <p class="eyebrow">System map / 系统地图</p>
+        <h1>从一次提问，<br>到<em>可追溯</em>的分析。</h1>
+        <p class="lede">StockMind 将通用 Agent Runtime 与股票研究能力分层组合：先识别意图，再选择直答或计划执行，最后携带证据、风险与执行编号返回结果。</p>
+      </div>
+      <div class="metrics" aria-label="系统能力摘要">
+        <div class="metric"><strong>2</strong><span>执行策略 · direct / planned</span></div>
+        <div class="metric"><strong>10+</strong><span>股票研究与运行时工具</span></div>
+        <div class="metric"><strong>4</strong><span>统一工具执行层级</span></div>
+        <div class="metric"><strong>1</strong><span>全链路 execution_id</span></div>
+      </div>
+    </section>
 
-        <rect x="30" y="24" width="1220" height="830" rx="12" fill="#fbfcff" stroke="#dde4ef"></rect>
+    <nav class="toolbar" aria-label="图表视图切换">
+      <div class="tabs" role="tablist">
+        <button class="tab" id="tab-architecture" role="tab" aria-selected="true" aria-controls="architecture">架构总览</button>
+        <button class="tab" id="tab-flow" role="tab" aria-selected="false" aria-controls="flow">请求流程</button>
+      </div>
+      <span class="hint">点击切换视图 · 横向滚动查看完整链路</span>
+    </nav>
 
-        <rect x="70" y="82" width="270" height="232" rx="10" fill="var(--entry)" stroke="var(--entry-border)" stroke-width="2"></rect>
-        <text x="92" y="114" class="cluster-title">入口与体验层</text>
+    <section class="panel active" id="architecture" role="tabpanel" aria-labelledby="tab-architecture">
+      <div class="canvas">
+        <header class="canvas-head">
+          <div><h2>当前系统架构</h2><p>职责边界清晰：入口组织会话，Runtime 负责编排，业务层提供领域能力。</p></div>
+          <div class="legend"><span><i class="dot" style="background:var(--amber)"></i>体验入口</span><span><i class="dot" style="background:var(--blue)"></i>Agent Runtime</span><span><i class="dot" style="background:var(--green)"></i>股票业务</span></div>
+        </header>
+        <div class="scroll">
+          <div class="architecture">
+            <section class="lane entry">
+              <h3>01 · 入口与体验层</h3><p>接收用户请求，维护会话与记忆，输出普通或 SSE 流式响应。</p>
+              <div class="stack">
+                <div class="node"><strong>Web Client</strong><small>chat.html / stream-chat.html</small></div>
+                <div class="node accent"><strong>AgentDemoController</strong><small>HTTP · SSE · Session · Memory</small></div>
+                <div class="node"><strong>Conversation Context</strong><small>最近 10 轮 · 用户偏好 · 请求缓存</small></div>
+              </div>
+            </section>
 
-        <rect x="88" y="138" width="232" height="58" rx="8" fill="#fff" stroke="#d4b16d" filter="url(#nodeShadow)"></rect>
-        <text x="204" y="162" text-anchor="middle" class="node-title">用户 / 前端页面</text>
-        <text x="204" y="181" text-anchor="middle" class="node-subtitle">chat.html / stream-chat.html</text>
+            <section class="lane runtime">
+              <h3>02 · javascope-agent Runtime</h3><p>强类型协议驱动的意图路由、策略选择、计划执行、上下文管理与校验。</p>
+              <div class="runtime-grid">
+                <div class="node span-3 accent"><strong>ReActAgent</strong><small>创建 ExecutionTrace · 调用 InputRouter · 选择 ExecutionStrategy</small></div>
+                <div class="node"><strong>InputRouter</strong><small>chat / meta / task<br>direct / planned</small></div>
+                <div class="node"><strong>DirectReplyStrategy</strong><small>闲聊、能力说明与简单回复</small></div>
+                <div class="node"><strong>PlanReActStrategy</strong><small>计划、行动、校验与重规划</small></div>
+                <div class="node"><strong>ContextManager</strong><small>挑选历史、失败约束与证据</small></div>
+                <div class="node"><strong>PromptAssembler</strong><small>生成本轮最小工作上下文</small></div>
+                <div class="node"><strong>Model Client</strong><small>ModelRequest → ModelResult</small></div>
+                <div class="pipe"><span>ToolRegistry</span><span>Authorization</span><span>Middleware</span><span>ToolInvoker</span></div>
+                <div class="node span-2"><strong>ExecutionTrace → ExecutionLogStore</strong><small>完整 Prompt、模型响应、工具结果与执行回放</small></div>
+                <div class="node"><strong>Final Answer</strong><small>答案合成 · 可选独立校验</small></div>
+              </div>
+            </section>
 
-        <rect x="88" y="226" width="232" height="62" rx="8" fill="#fff" stroke="#d4b16d" filter="url(#nodeShadow)"></rect>
-        <text x="204" y="251" text-anchor="middle" class="node-title">AgentDemoController</text>
-        <text x="204" y="270" text-anchor="middle" class="node-subtitle">HTTP / SSE / 会话入口</text>
+            <section class="lane business">
+              <h3>03 · StockMind 业务层</h3><p>通过 Prompt 定制和 @AgentTool 注入领域知识、数据与确定性计算。</p>
+              <div class="stack">
+                <div class="node"><strong>业务规则</strong><small>StockAgentBusinessConfiguration<br>Prompt · 澄清 · 风险边界</small></div>
+                <div class="node"><strong>市场数据</strong><small>market_quote · historical_bars</small></div>
+                <div class="node"><strong>技术指标</strong><small>MA · MACD · RSI · BOLL · ATR · OBV</small></div>
+                <div class="node"><strong>研究证据</strong><small>news_search · knowledge_search</small></div>
+                <div class="node"><strong>基础设施</strong><small>行情 Provider · OceanBase 向量库</small></div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </section>
 
-        <rect x="386" y="82" width="806" height="642" rx="10" fill="var(--runtime)" stroke="var(--runtime-border)" stroke-width="2"></rect>
-        <text x="410" y="114" class="cluster-title">javascope-agent：通用 Agent Runtime</text>
+    <section class="panel" id="flow" role="tabpanel" aria-labelledby="tab-flow" hidden>
+      <div class="canvas">
+        <header class="canvas-head">
+          <div><h2>一次请求如何完成</h2><p>以“分析 贵州茅台 是否值得关注”为例，展示从入口到可追溯答案的完整路径。</p></div>
+          <div class="legend"><span><i class="dot" style="background:var(--amber)"></i>路由判断</span><span><i class="dot" style="background:var(--green)"></i>循环执行</span><span><i class="dot" style="background:var(--purple)"></i>证据沉淀</span></div>
+        </header>
+        <div class="scroll">
+          <div class="flow">
+            <div class="flow-row">
+              <div class="step"><b>1</b><strong>用户提交问题</strong><small>Web / HTTP / SSE</small></div>
+              <div class="step"><b>2</b><strong>组织会话上下文</strong><small>session + memory + cache</small></div>
+              <div class="step"><b>3</b><strong>创建执行轨迹</strong><small>生成 execution_id</small></div>
+              <div class="step"><b>4</b><strong>识别输入类型</strong><small>chat / meta / task</small></div>
+              <div class="step"><b>5</b><strong>选择执行模式</strong><small>direct / planned</small></div>
+              <div class="step"><b>6</b><strong>构建工作上下文</strong><small>仅保留本轮相关证据</small></div>
+              <div class="step"><b>7</b><strong>调用模型</strong><small>结构化 ModelResult</small></div>
+            </div>
 
-        <rect x="424" y="140" width="220" height="62" rx="8" fill="#fff" stroke="#8db1e4" filter="url(#nodeShadow)"></rect>
-        <text x="534" y="165" text-anchor="middle" class="node-title">ReActAgent</text>
-        <text x="534" y="184" text-anchor="middle" class="node-subtitle">Agent 执行入口</text>
+            <div class="decision">任务复杂度分流</div>
 
-        <rect x="424" y="238" width="220" height="62" rx="8" fill="#fff" stroke="#8db1e4" filter="url(#nodeShadow)"></rect>
-        <text x="534" y="263" text-anchor="middle" class="node-title">InputRouter</text>
-        <text x="534" y="282" text-anchor="middle" class="node-subtitle">chat / meta / task 路由</text>
+            <div class="branches">
+              <article class="branch direct">
+                <div class="branch-head"><h3>Direct · 直接执行</h3><span class="badge">事实查询 / 单步任务</span></div>
+                <div class="mini-flow">
+                  <div class="mini"><strong>暴露必要工具</strong><small>如 market_quote</small></div>
+                  <div class="mini"><strong>统一执行管线</strong><small>鉴权、限流、缓存、重试</small></div>
+                  <div class="mini"><strong>合成回答</strong><small>事实 + 数据时点 + 局限</small></div>
+                  <div class="mini"><strong>返回响应</strong><small>JSON / SSE</small></div>
+                </div>
+              </article>
 
-        <rect x="424" y="338" width="220" height="64" rx="8" fill="#fff" stroke="#8db1e4" filter="url(#nodeShadow)"></rect>
-        <text x="534" y="363" text-anchor="middle" class="node-title">ReAct Loop</text>
-        <text x="534" y="382" text-anchor="middle" class="node-subtitle">多轮 reasoning / 状态推进</text>
+              <article class="branch planned">
+                <div class="branch-head"><h3>Planned · 计划执行</h3><span class="badge">分析 / 推荐 / 多步骤</span></div>
+                <div class="mini-flow">
+                  <div class="mini"><strong>创建计划</strong><small>首轮仅暴露 create_plan</small></div>
+                  <div class="mini"><strong>逐步行动</strong><small>行情、指标、新闻、知识库</small></div>
+                  <div class="mini"><strong>校验步骤</strong><small>证据完整性与语义检查</small></div>
+                  <div class="mini"><strong>失败重规划</strong><small>仅替换失败 step_id</small></div>
+                  <div class="mini"><strong>合成结论</strong><small>支持 / 冲突 / 风险</small></div>
+                  <div class="mini"><strong>独立校验</strong><small>按配置可选启用</small></div>
+                </div>
+                <div class="feedback">↺ ReAct 循环：行动 → 工具结果 → 更新上下文 → 下一步，直到完成或达到轮次上限</div>
+              </article>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
 
-        <rect x="424" y="443" width="220" height="64" rx="8" fill="#fff" stroke="#8db1e4" filter="url(#nodeShadow)"></rect>
-        <text x="534" y="468" text-anchor="middle" class="node-title">AgentToolCallExtractor</text>
-        <text x="534" y="487" text-anchor="middle" class="node-subtitle">提取 tool_calls</text>
-
-        <rect x="696" y="338" width="220" height="64" rx="8" fill="#fff" stroke="#8db1e4" filter="url(#nodeShadow)"></rect>
-        <text x="806" y="363" text-anchor="middle" class="node-title">ToolCallDispatcher</text>
-        <text x="806" y="382" text-anchor="middle" class="node-subtitle">工具分发 / 计划衔接</text>
-
-        <rect x="696" y="443" width="220" height="64" rx="8" fill="#fff" stroke="#8db1e4" filter="url(#nodeShadow)"></rect>
-        <text x="806" y="468" text-anchor="middle" class="node-title">PlanExecutor</text>
-        <text x="806" y="487" text-anchor="middle" class="node-subtitle">步骤执行 / 重试 / 依赖</text>
-
-        <rect x="696" y="548" width="220" height="64" rx="8" fill="#fff" stroke="#8db1e4" filter="url(#nodeShadow)"></rect>
-        <text x="806" y="573" text-anchor="middle" class="node-title">StepValidatorTool</text>
-        <text x="806" y="592" text-anchor="middle" class="node-subtitle">步骤输出语义校验</text>
-
-        <rect x="956" y="238" width="196" height="56" rx="8" fill="#fff" stroke="#8db1e4" filter="url(#nodeShadow)"></rect>
-        <text x="1054" y="262" text-anchor="middle" class="node-title">CreatePlanTool</text>
-        <text x="1054" y="280" text-anchor="middle" class="node-subtitle">创建计划</text>
-
-        <rect x="956" y="318" width="196" height="56" rx="8" fill="#fff" stroke="#8db1e4" filter="url(#nodeShadow)"></rect>
-        <text x="1054" y="342" text-anchor="middle" class="node-title">RevisePlanTool</text>
-        <text x="1054" y="360" text-anchor="middle" class="node-subtitle">失败后重规划</text>
-
-        <rect x="956" y="398" width="196" height="56" rx="8" fill="#fff" stroke="#8db1e4" filter="url(#nodeShadow)"></rect>
-        <text x="1054" y="422" text-anchor="middle" class="node-title">ClarifyRequirementTool</text>
-        <text x="1054" y="440" text-anchor="middle" class="node-subtitle">需求澄清</text>
-
-        <rect x="956" y="500" width="196" height="64" rx="8" fill="#fff" stroke="#8db1e4" filter="url(#nodeShadow)"></rect>
-        <text x="1054" y="525" text-anchor="middle" class="node-title">FinalAnswerSynthesizer</text>
-        <text x="1054" y="544" text-anchor="middle" class="node-subtitle">最终答案合成</text>
-
-        <rect x="956" y="604" width="196" height="56" rx="8" fill="#fff" stroke="#8db1e4" filter="url(#nodeShadow)"></rect>
-        <text x="1054" y="628" text-anchor="middle" class="node-title">IndependentVerifier</text>
-        <text x="1054" y="646" text-anchor="middle" class="node-subtitle">可选独立校验</text>
-
-        <rect x="424" y="622" width="220" height="64" rx="8" fill="#fff" stroke="#8db1e4" filter="url(#nodeShadow)"></rect>
-        <text x="534" y="647" text-anchor="middle" class="node-title">AgentToolExecutor</text>
-        <text x="534" y="666" text-anchor="middle" class="node-subtitle">工具执行 SPI</text>
-
-        <rect x="696" y="652" width="220" height="48" rx="8" fill="#fff" stroke="#8db1e4" filter="url(#nodeShadow)"></rect>
-        <text x="806" y="681" text-anchor="middle" class="node-title">ReflectiveAgentToolExecutor</text>
-
-        <rect x="696" y="140" width="220" height="62" rx="8" fill="#fff" stroke="#8db1e4" filter="url(#nodeShadow)"></rect>
-        <text x="806" y="165" text-anchor="middle" class="node-title">AgentChatModelClient</text>
-        <text x="806" y="184" text-anchor="middle" class="node-subtitle">OpenAI-compatible API</text>
-
-        <rect x="70" y="372" width="270" height="352" rx="10" fill="var(--biz)" stroke="var(--biz-border)" stroke-width="2"></rect>
-        <text x="92" y="404" class="cluster-title">stockmind 业务层</text>
-
-        <rect x="88" y="430" width="232" height="70" rx="8" fill="#fff" stroke="#80bf95" filter="url(#nodeShadow)"></rect>
-        <text x="204" y="455" text-anchor="middle" class="node-title">StockAgentBusinessConfiguration</text>
-        <text x="204" y="474" text-anchor="middle" class="node-subtitle">股票 prompt / 澄清策略</text>
-        <text x="204" y="491" text-anchor="middle" class="small">AgentBusinessPromptCustomizer</text>
-
-        <rect x="88" y="544" width="232" height="70" rx="8" fill="#fff" stroke="#80bf95" filter="url(#nodeShadow)"></rect>
-        <text x="204" y="569" text-anchor="middle" class="node-title">StockAgentTools</text>
-        <text x="204" y="588" text-anchor="middle" class="node-subtitle">market_quote / news_search</text>
-        <text x="204" y="605" text-anchor="middle" class="small">knowledge_search</text>
-
-        <rect x="88" y="652" width="232" height="54" rx="8" fill="#fff" stroke="#80bf95" filter="url(#nodeShadow)"></rect>
-        <text x="204" y="675" text-anchor="middle" class="node-title">stockmind-common</text>
-        <text x="204" y="693" text-anchor="middle" class="node-subtitle">OceanBase 向量检索 / 文档抽取</text>
-
-        <path class="edge" d="M204 196 L204 226"></path>
-        <path class="edge" d="M320 257 C360 257, 374 171, 424 171"></path>
-        <path class="edge-soft" d="M204 288 C204 340, 500 336, 500 338"></path>
-
-        <path class="edge" d="M534 202 L534 238"></path>
-        <path class="edge" d="M534 300 L534 338"></path>
-        <path class="edge" d="M534 402 L534 443"></path>
-        <path class="edge" d="M644 475 C672 475, 672 370, 696 370"></path>
-        <path class="edge" d="M806 402 L806 443"></path>
-        <path class="edge" d="M806 507 L806 548"></path>
-        <path class="edge-soft" d="M916 370 C940 370, 930 266, 956 266"></path>
-        <path class="edge-soft" d="M916 370 C936 370, 936 346, 956 346"></path>
-        <path class="edge-soft" d="M916 370 C940 370, 930 426, 956 426"></path>
-        <path class="edge-soft" d="M644 370 C665 320, 680 202, 696 171"></path>
-        <path class="edge-soft" d="M1054 294 L1054 318"></path>
-        <path class="edge-soft" d="M1054 454 L1054 500"></path>
-        <path class="edge-soft" d="M1054 564 L1054 604"></path>
-        <path class="edge" d="M696 676 L644 660"></path>
-        <path class="edge" d="M534 622 L534 507"></path>
-
-        <path class="edge-soft" d="M320 465 C355 465, 360 154, 424 154"></path>
-        <path class="edge" d="M424 654 C376 654, 370 579, 320 579"></path>
-        <path class="edge" d="M204 614 L204 652"></path>
-        <path class="edge-soft" d="M320 579 C392 579, 620 676, 696 676"></path>
-
-        <text x="350" y="250" class="small">调用 Agent</text>
-        <text x="350" y="444" class="small">拼接记忆 / 会话</text>
-        <text x="336" y="454" class="small">业务规则注入</text>
-        <text x="348" y="610" class="small">注册 @AgentTool</text>
-      </svg>
-    </div>
-
-    <div class="legend">
-      <span><i class="swatch" style="background: var(--entry); border-color: var(--entry-border);"></i>入口与体验层</span>
-      <span><i class="swatch" style="background: var(--runtime); border-color: var(--runtime-border);"></i>通用 Agent Runtime</span>
-      <span><i class="swatch" style="background: var(--biz); border-color: var(--biz-border);"></i>股票业务层</span>
-    </div>
+    <section class="notes" aria-label="架构原则">
+      <article class="note"><span>01 / SEPARATION</span><h3>轨迹与上下文分离</h3><p>完整执行过程用于调试回放；模型只接收当前任务真正需要的历史、约束与证据。</p></article>
+      <article class="note"><span>02 / GOVERNANCE</span><h3>工具调用统一治理</h3><p>每次调用依次经过注册、授权、中间件和执行器，集中处理限流、幂等、缓存与重试。</p></article>
+      <article class="note"><span>03 / EVIDENCE</span><h3>结论可追溯</h3><p>分析同时呈现支持信号、冲突信号、数据局限和 execution_id，不把技术指标包装成确定预测。</p></article>
+    </section>
   </main>
+
+  <script>
+    const tabs = [...document.querySelectorAll('[role="tab"]')];
+    const panels = [...document.querySelectorAll('[role="tabpanel"]')];
+
+    function activate(tab) {
+      tabs.forEach((item) => {
+        const selected = item === tab;
+        item.setAttribute('aria-selected', String(selected));
+        item.tabIndex = selected ? 0 : -1;
+      });
+      panels.forEach((panel) => {
+        const active = panel.id === tab.getAttribute('aria-controls');
+        panel.classList.toggle('active', active);
+        panel.hidden = !active;
+      });
+    }
+
+    tabs.forEach((tab, index) => {
+      tab.addEventListener('click', () => activate(tab));
+      tab.addEventListener('keydown', (event) => {
+        if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+        event.preventDefault();
+        const direction = event.key === 'ArrowRight' ? 1 : -1;
+        const next = tabs[(index + direction + tabs.length) % tabs.length];
+        activate(next);
+        next.focus();
+      });
+    });
+  </script>
 </body>
 </html>

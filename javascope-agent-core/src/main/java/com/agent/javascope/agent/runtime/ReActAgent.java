@@ -48,10 +48,13 @@ public class ReActAgent extends Agent {
         this.inputRouter = new InputRouter(promptProvider, modelClient, json, new AgentToolCallExtractor(json));
         ExecutionStrategy directReply = new DirectReplyExecutionStrategy(
                 properties, promptProvider, toolExecutor, modelClient, json);
+        ExecutionStrategy react = new ReActExecutionStrategy(
+                properties, promptProvider, toolExecutor, modelClient, json,
+                independentVerifierService, executionLogStore, contextManager, promptAssembler);
         ExecutionStrategy planReAct = new PlanReActExecutionStrategy(
                 properties, promptProvider, toolExecutor, modelClient, json, stepValidatorTool,
                 independentVerifierService, executionLogStore, contextManager, promptAssembler);
-        this.strategySelector = new ExecutionStrategySelector(List.of(directReply, planReAct));
+        this.strategySelector = new ExecutionStrategySelector(List.of(directReply, react, planReAct));
     }
 
     public String call(String input, String sessionId, String userId) {

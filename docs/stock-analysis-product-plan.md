@@ -11,7 +11,7 @@
 - `stock_snapshot_analysis` 只归纳调用方提供的快照，不计算历史指标。
 - `news_search` 是失败占位实现。
 - `knowledge_search` 可检索 OceanBase 向量知识库，是现阶段最接近可用的业务能力。
-- `stockmind-domain`、`stockmind-application`、`stockmind-infrastructure` 尚未真正承载领域模型、用例和数据适配器，股票逻辑主要集中于 `bootstrap/StockAgentTools`。
+- 股票工具已按行情、技术指标、研究证据和综合分析拆分到 bootstrap 层的独立组件；领域模型、应用服务和基础设施适配器仍是后续持续演进边界。
 - `stream-chat.html` 是 920px 宽的三段式 Demo。`.app { max-width: 920px; margin: 0 auto; }` 是页面无法铺满的直接原因；页面也没有自选股、行情上下文、图表、分析卡、任务过程和会话管理入口。
 
 建议把产品定位从“股票聊天 Demo”升级为“对话驱动的股票研究工作台”：聊天负责理解意图与组织解释，确定性的行情、指标、筛选和回测由 Java 工具负责，所有结论能追溯到数据时间、参数和证据。
@@ -41,7 +41,421 @@
 - 量价：成交量均线/量比 + OBV。
 - 输出策略：每个信号包含 `direction`、`strength`、`observedAt`、`evidence`、`limitations`；综合结论同时列出支持与冲突信号。
 
-### 2.2 P1：第二期分析能力
+### 2.2 编码前统一约定
+
+以下约定是所有指标实现的前置条件，否则不同工具会对同一股票产生不可比较的结果。
+
+#### 2.2.1 输入 Bar 模型
+
+```java
+public record MarketBar(
+        String instrumentId,      // 600519.SH，不接收含糊代码
+        BarInterval interval,     // DAY_1、MINUTE_5 等
+        Instant openTime,
+        Instant closeTime,
+        BigDecimal open,
+        BigDecimal high,
+        BigDecimal low,
+        BigDecimal close,
+        BigDecimal volume,
+        BigDecimal amount,
+        AdjustmentMode adjustment // NONE、FORWARD、BACKWARD
+) {}
+```
+
+校验顺序：
+
+1. 按 `openTime` 升序排序；相同时间只能保留一条，数据冲突时报错而非静默覆盖。
+2. `open/high/low/close > 0`，`volume/amount >= 0`。
+3. `high >= max(open, close, low)` 且 `low <= min(open, close, high)`。
+4. 全部 Bar 的 instrument、interval、adjustment 必须一致。
+5. 停牌日不人工补零价 Bar；交易日缺口记录进 `dataQuality.missingBars`。
+6. 指标只使用已收盘 Bar；实时未收盘 Bar 必须标记 `partial=true`，默认不参与正式信号。
+
+为了让所有指标对初始化方式达成一致，首期统一采用：
+
+- SMA：窗口内算术平均。
+- 标准差：总体标准差，即除以 `n`；必须在代码和响应中固定 `population`，不能有的工具除以 `n`、有的除以 `n-1`。
+- EMA：首个 EMA 使用前 `period` 个 close 的 SMA 作为 seed，之后 `EMA_t = α × close_t + (1-α) × EMA_(t-1)`，`α=2/(period+1)`。
+- Wilder 平滑：首值用前 `period` 项的算术平均，后续 `value_t=(previous×(period-1)+current)/period`。
+- 内部计算建议 `double` 与 ta4j 对齐，API 输出统一舍入但数据库保留原始精度；禁止用已舍入值继续计算后续指标。
+
+#### 2.2.2 通用请求与结果模型
+
+```java
+public record TechnicalAnalysisRequest(
+        String instrumentId,
+        BarInterval interval,
+        LocalDate startDate,
+        LocalDate endDate,
+        AdjustmentMode adjustment,
+        boolean includeSeries,
+        Map<String, Object> parameters
+) {}
+
+public enum SignalDirection { BULLISH, BEARISH, NEUTRAL }
+public enum SignalStrength { WEAK, MODERATE, STRONG }
+
+public record TechnicalSignal(
+        String code,              // MACD_BULLISH_CROSS
+        SignalDirection direction,
+        SignalStrength strength,
+        Instant observedAt,
+        String explanation,
+        Map<String, BigDecimal> evidence,
+        List<String> limitations
+) {}
+
+public record IndicatorPoint(
+        Instant time,
+        Map<String, BigDecimal> values,
+        boolean valid             // warm-up 阶段为 false
+) {}
+
+public record IndicatorResult(
+        String indicator,
+        Map<String, Object> parameters,
+        Map<String, BigDecimal> latest,
+        List<IndicatorPoint> series,
+        List<TechnicalSignal> signals,
+        int warmupBars,
+        DataQuality dataQuality
+) {}
+```
+
+统一错误码：`INVALID_SYMBOL`、`INVALID_RANGE`、`INVALID_PARAMETER`、`INSUFFICIENT_BARS`、`INCONSISTENT_BARS`、`DATA_SOURCE_UNAVAILABLE`、`PARTIAL_BAR_EXCLUDED`。参数错误不可重试，供应商暂时故障可重试。
+
+#### 2.2.3 数据量规则
+
+接口不能只判断 `bars.size() >= period`。EMA、MACD 和 RSI 存在收敛期，建议：
+
+```text
+SMA/BOLL 最低：period
+RSI 最低：period + 1；建议拉取 period + 100
+ATR 最低：period + 1；建议拉取 period + 100
+MACD 最低：slow + signal；建议拉取 slow + signal + 100
+EMA60 建议：至少 60 + 150 根
+```
+
+`minimumBars` 是“能计算”，`recommendedBars` 是“适合解释”。处于两者之间时允许返回结果，但必须加入 `CONVERGENCE_RISK` warning。
+
+### 2.3 历史行情工具详细规格
+
+#### 2.3.1 `historical_bars`
+
+职责仅限获取、规范化和缓存 OHLCV，不计算指标。
+
+Agent 工具输入：
+
+```json
+{
+  "instrument_id": "600519.SH",
+  "interval": "1d",
+  "start_date": "2025-01-01",
+  "end_date": "2026-07-10",
+  "adjustment": "forward"
+}
+```
+
+执行算法：
+
+1. 解析证券并查询交易所时区、交易日历。
+2. 将自然日期转换成供应商查询范围，不使用服务器默认时区。
+3. 请求 `MarketDataProvider.loadBars()`；供应商 DTO 在 infrastructure 层转换成 `MarketBar`。
+4. 执行 Bar 校验、排序、去重和缺失交易日检测。
+5. 计算数据集内容哈希并写缓存，生成不可变 `datasetId`。
+6. 返回概要和可选的绘图序列；指标工具接收 `datasetId`，保证同一轮分析使用相同数据快照。
+
+```java
+public interface MarketDataProvider {
+    BarDataset loadBars(HistoricalBarsQuery query);
+}
+
+public record BarDataset(
+        String datasetId,
+        List<MarketBar> bars,
+        String source,
+        Instant asOf,
+        DataQuality dataQuality
+) {}
+```
+
+验收用例：乱序数据可规范化；重复且相同的 Bar 可去重；重复但价格不同必须失败；跨春节不把非交易日算缺失；复权模式不同必须生成不同 datasetId。
+
+### 2.4 均线分析详细规格
+
+#### 2.4.1 计算
+
+对窗口 `p`：
+
+```text
+SMA_t(p) = sum(close[t-p+1 ... t]) / p
+EMA seed 位于 t=p-1：SMA_(p-1)(p)
+EMA_t(p) = close_t × 2/(p+1) + EMA_(t-1) × (1-2/(p+1))
+slopePct = (MA_t - MA_(t-lookback)) / abs(MA_(t-lookback)) × 100
+```
+
+首期默认 `periods=[5,10,20,60]`、`type=EMA`、`slopeLookback=5`。`period` 限制 2–250，必须升序去重。
+
+#### 2.4.2 信号规则
+
+- 金叉：上一有效点 `fast <= slow` 且当前点 `fast > slow`。
+- 死叉：上一有效点 `fast >= slow` 且当前点 `fast < slow`。
+- 多头排列：`close > MA5 > MA10 > MA20 > MA60`；空头排列反向。
+- 趋势上行：选定主均线（默认 EMA20）的 `slopePct > +0.5%`；下行 `< -0.5%`；阈值配置化。
+- 为避免把微小抖动当交叉，可配置 `minSeparationPct`，交叉后 `abs(fast-slow)/slow` 未达到阈值则标记 WEAK。
+
+不要把“金叉”直接翻译为“买入”。输出应是“短周期均线向上穿越长周期均线，构成偏多趋势证据”。
+
+### 2.5 MACD 详细规格
+
+#### 2.5.1 公式和序列
+
+```text
+DIF_t = EMA(close, fast)_t - EMA(close, slow)_t
+DEA_t = EMA(DIF, signal)_t
+histogram_t = DIF_t - DEA_t
+```
+
+默认 `fast=12, slow=26, signal=9`；校验 `2 <= fast < slow <= 250`、`2 <= signal <= 100`。国内部分软件将柱值显示为 `2 × (DIF-DEA)`，本项目固定使用未乘 2 版本，并在响应 `histogramScale=1` 明示，防止与外部图表对不上。
+
+MACD 的 DIF 只有在 slow EMA 有效后才有效；DEA 用首批 signal 个有效 DIF 的 SMA 初始化。建议 `warmupBars=slow+signal-2`，更早的点 `valid=false`。
+
+#### 2.5.2 信号判定
+
+按最新两个有效点判断：
+
+```java
+boolean bullishCross = prev.dif() <= prev.dea() && curr.dif() > curr.dea();
+boolean bearishCross = prev.dif() >= prev.dea() && curr.dif() < curr.dea();
+boolean aboveZero = curr.dif() > 0 && curr.dea() > 0;
+boolean momentumExpanding = Math.abs(curr.histogram()) > Math.abs(prev.histogram());
+```
+
+强度建议：
+
+- WEAK：发生交叉，但 DIF 与 DEA 距离小于收盘价的 `0.05%`。
+- MODERATE：交叉距离达阈值，或柱值连续 2 根同方向扩大。
+- STRONG：交叉方向同时得到零轴位置、EMA20/60 趋势和成交量确认；不能仅因远离零轴就定为 STRONG。
+
+背离不在 MVP 中用两点随意判断。若实现，必须先用可配置 pivot 算法找到两个已确认价格高/低点，再比较对应 DIF；最后一个 pivot 需等待右侧 `rightBars`，所以属于滞后信号，并返回 pivot 时间和价格证据。
+
+示例最新值：
+
+```json
+{
+  "dif": 1.2384,
+  "dea": 0.9821,
+  "histogram": 0.2563,
+  "histogram_scale": 1,
+  "state": "ABOVE_SIGNAL_ABOVE_ZERO"
+}
+```
+
+### 2.6 RSI 详细规格
+
+#### 2.6.1 Wilder RSI 算法
+
+```text
+change_t = close_t - close_(t-1)
+gain_t = max(change_t, 0)
+loss_t = max(-change_t, 0)
+
+初始 avgGain = first period gains 的平均
+初始 avgLoss = first period losses 的平均
+后续 avgGain_t = (prevAvgGain × (period-1) + gain_t) / period
+后续 avgLoss_t = (prevAvgLoss × (period-1) + loss_t) / period
+RS = avgGain / avgLoss
+RSI = 100 - 100/(1+RS)
+```
+
+边界规则必须显式编码：
+
+- `avgLoss=0 && avgGain>0`：RSI=100。
+- `avgGain=0 && avgLoss>0`：RSI=0。
+- 两者都为 0：RSI=50，表示无方向，而不是 NaN。
+
+默认 `period=14`、`overbought=70`、`oversold=30`；阈值满足 `0 < oversold < 50 < overbought < 100`。
+
+#### 2.6.2 信号
+
+- 进入超买：previous RSI `<=70` 且 current `>70`；只表示动量强，不直接看空。
+- 离开超买：previous `>=70` 且 current `<70`，可作为动量降温证据。
+- 进入/离开超卖同理。
+- 中轴：上穿 50 记偏多动量，下穿 50 记偏空动量。
+- RSI 背离沿用 MACD 的确认 pivot 机制，首期可不开放。
+
+### 2.7 Bollinger Bands 详细规格
+
+#### 2.7.1 公式
+
+```text
+middle_t = SMA(close, period)
+std_t = sqrt(sum((close_i-middle_t)^2) / period)
+upper_t = middle_t + deviations × std_t
+lower_t = middle_t - deviations × std_t
+bandwidth_t = (upper_t-lower_t) / middle_t × 100
+percentB_t = (close_t-lower_t) / (upper_t-lower_t)
+```
+
+默认 `period=20`、`deviations=2.0`。若 `upper==lower`，`percentB=0.5`、`bandwidth=0`，不得除零。
+
+#### 2.7.2 信号
+
+- 上/下轨突破：上一根在轨内，本根 close 穿出轨道。
+- 回归轨内：上一根在轨外，本根回到轨内。
+- 收口：当前 bandwidth 低于最近 `lookback=120` 个有效 bandwidth 的 20% 分位。
+- 扩张：当前 bandwidth 高于 80% 分位且较上一根增加。
+- 沿轨运行：最近 5 根至少 4 根 `percentB >= 0.8`（偏多）或 `<=0.2`（偏空）。
+
+分位数样本不足 40 根时不输出收口/扩张信号。突破上下轨只表示相对位置和波动，不直接生成反转结论。
+
+### 2.8 ATR 详细规格
+
+#### 2.8.1 公式
+
+```text
+TR_t = max(
+  high_t-low_t,
+  abs(high_t-close_(t-1)),
+  abs(low_t-close_(t-1))
+)
+初始 ATR = first period TR 的平均
+ATR_t = (previousATR × (period-1) + TR_t) / period
+ATRP_t = ATR_t / close_t × 100
+```
+
+第一根没有 previous close，其 TR 取 `high-low`。默认 period=14。跨复权除权点必须使用同一复权序列，否则 gap 会制造虚假 ATR。
+
+#### 2.8.2 状态
+
+- `VOLATILITY_EXPANDING`：ATR% 高于 120 根历史的 80% 分位，且连续 3 根总体上升。
+- `VOLATILITY_CONTRACTING`：低于 20% 分位，且连续 3 根总体下降。
+- `NORMAL`：其余情况。
+
+ATR 不含方向。止损距离可以返回研究参数 `referenceDistance = multiplier × ATR`，但不得表述为适用于用户的个性化止损建议。
+
+### 2.9 成交量与 OBV 详细规格
+
+#### 2.9.1 计算
+
+```text
+volumeMA_t = SMA(volume, period)
+volumeRatio_t = volume_t / volumeMA_t
+
+OBV_0 = 0
+close_t > close_(t-1): OBV_t = OBV_(t-1) + volume_t
+close_t < close_(t-1): OBV_t = OBV_(t-1) - volume_t
+close_t = close_(t-1): OBV_t = OBV_(t-1)
+```
+
+默认 `period=20`。若 `volumeMA=0`，`volumeRatio` 返回 null 并添加 `ZERO_VOLUME_WINDOW`，不能返回 Infinity。
+
+#### 2.9.2 信号
+
+- 放量：`volumeRatio >= 1.5`；显著放量：`>=2.0`。
+- 缩量：`volumeRatio <=0.7`。
+- 价量确认：日收益方向与 OBV 5 日斜率方向相同，并且 `volumeRatio>=1.2`。
+- 价量背离：价格 pivot 与 OBV pivot 方向冲突；和其他背离一样必须用已确认 pivot，不能比较任意首尾两点。
+
+A 股不同供应商的 volume 可能是“股”或“手”。provider 必须统一成股，原始单位写入元数据。
+
+### 2.10 综合技术报告详细规格
+
+`technical_summary` 不重新计算原始指标，只读取同一 datasetId 下的分析结果，避免参数和数据快照不一致。
+
+#### 2.10.1 四维状态，而非神秘总分
+
+```java
+public record TechnicalDimension(
+        String name,              // TREND/MOMENTUM/VOLATILITY/VOLUME
+        SignalDirection direction,
+        int confidence,           // 0..100，代表证据一致性，不是上涨概率
+        List<String> supportingSignalIds,
+        List<String> conflictingSignalIds
+) {}
+```
+
+建议规则：
+
+- 趋势：EMA20/60 位置与斜率、MACD 交叉和零轴。
+- 动量：RSI 区域、中轴穿越、MACD 柱变化。
+- 波动：ATR% 分位、BOLL bandwidth 状态；方向通常 NEUTRAL。
+- 量能：量比、OBV 方向、价格与 OBV 是否一致。
+
+置信度是确定性规则的“一致性分”，示例：某维度可用信号权重总和为 100，偏多权重 70、偏空 20、中性 10，则方向 BULLISH，`confidence=abs(70-20)=50`。响应必须说明它不是收益概率。
+
+综合结论模板：
+
+1. 数据范围与时间。
+2. 核心状态：趋势、动量、波动、量能。
+3. 支持证据，精确到指标值和发生时间。
+4. 冲突证据。
+5. 数据质量与方法局限。
+6. 建议继续验证的基本面、行业或事件信息。
+
+如果少于 3 个维度有效，不生成综合方向，只返回 `INSUFFICIENT_DIMENSIONS`。若趋势和动量方向相反，必须明确标记 `CONFLICTING_SIGNALS`，不能用平均分掩盖冲突。
+
+### 2.11 Agent 工具方法骨架
+
+```java
+@AgentTool(
+    name = "macd_analysis",
+    title = "MACD 技术分析",
+    description = "基于已缓存的历史收盘价计算 MACD；输出概率性技术信号，不给出买卖指令。",
+    namespace = "finance.technical",
+    category = "technical_analysis",
+    readOnly = true,
+    idempotent = true,
+    inputSchema = """
+      {
+        "type":"object",
+        "properties":{
+          "dataset_id":{"type":"string"},
+          "fast_period":{"type":"integer","minimum":2,"default":12},
+          "slow_period":{"type":"integer","minimum":3,"default":26},
+          "signal_period":{"type":"integer","minimum":2,"default":9},
+          "include_series":{"type":"boolean","default":false}
+        },
+        "required":["dataset_id"]
+      }
+      """)
+public IndicatorToolResponse macdAnalysis(MacdToolRequest request) {
+    MacdParameters parameters = request.toValidatedParameters();
+    BarDataset dataset = datasetService.require(request.datasetId());
+    MacdResult result = technicalAnalysisService.macd(dataset, parameters);
+    return IndicatorToolResponse.from(dataset, result);
+}
+```
+
+实际项目的反射执行器当前支持 `Map<String,Object>` 和 JSON 字符串返回值；第一轮可以保留该适配形式，但 application service 必须使用强类型请求和结果。bootstrap 只负责 `Map -> DTO -> service -> JSON`，不出现指标公式。
+
+### 2.12 单元测试与基准数据
+
+每个指标至少包含四类测试：
+
+1. 公式样例：小型固定数据逐项验证中间结果。
+2. Golden dataset：固定 OHLCV CSV，与 ta4j 或另一个可信实现对比，误差建议 `1e-8`，API 舍入测试另做。
+3. 性质测试：SMA 恒定序列仍恒定；RSI 始终位于 0–100；BOLL upper>=middle>=lower；ATR>=0。
+4. 边界测试：数据不足、恒定价格、零成交量、gap、极大数值、乱序、重复时间、未收盘 Bar。
+
+MACD 必测：
+
+- 单调上涨序列最终 DIF 为正。
+- 金叉只在穿越当根产生一次，不能后续每根重复。
+- 验证 histogram 未乘 2。
+
+RSI 必测：全涨=100、全跌=0、完全不变=50；第一个有效值位置正确。
+
+BOLL 必测：恒定序列上下中轨相等、bandwidth=0、%B=0.5；标准差明确除以 n。
+
+ATR 必测：无 gap、向上 gap、向下 gap 分别选中正确 TR 分支。
+
+OBV 必测：上涨加量、下跌减量、平盘不变；零均量不除零。
+
+集成验收示例：给定同一 `datasetId` 连续调用全部指标，所有响应的 symbol、interval、range、adjustment、source 和 asOf 必须一致；综合报告引用的 signalId 必须真实存在。
+
+### 2.13 P1：第二期分析能力
 
 - 趋势强度：ADX/DMI（默认 14）；ADX 衡量强度而非方向，常用阈值只作为可配置参考。[DMI/ADX 说明](https://www.fidelity.com/learning-center/trading-investing/technical-analysis/technical-indicator-guide/dmi)
 - 相对强弱：个股相对沪深 300、标普 500 或所属行业指数的比值与区间收益，避免把 RSI 与“相对市场强弱”混为一谈。[Relative Strength Comparison](https://www.fidelity.com/learning-center/trading-investing/technical-analysis/technical-indicator-guide/relative-strength-comparison)
@@ -51,7 +465,7 @@
 - 事件面：公告、财报、分红、回购、减持、监管和新闻；记录来源、发布时间、事件发生时间和去重键。
 - 多股票对比与条件选股：统一交易日、币种、复权口径和基准后再比较。
 
-### 2.3 P2：研究与留存能力
+### 2.14 P2：研究与留存能力
 
 - 策略回测：时间范围、基准、手续费、滑点、成交规则、复权方式均显式配置；输出累计收益、年化收益、最大回撤、Sharpe、胜率、交易次数和基准超额。
 - 防止回测偏差：禁止未来函数；区分信号时间与成交时间；预留训练/验证/样本外区间；记录退市与成分股历史以降低幸存者偏差。
@@ -86,7 +500,7 @@ stockmind-bootstrap
   REST/SSE DTO 与异常映射
 ```
 
-不要继续把计算逻辑堆入 `StockAgentTools`。`@AgentTool` 是模型适配层，指标公式和数据访问必须可脱离 Agent 独立单测、批处理和复用。
+不要把计算逻辑堆入任一 `@AgentTool` 组件。工具类只承担模型适配；指标公式和数据访问必须可脱离 Agent 独立单测、批处理和复用。
 
 ### 3.2 指标引擎选择
 

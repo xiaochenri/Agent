@@ -7,7 +7,12 @@ public class AgentRuntimeProperties {
     private String apiKey = "";
     private String baseUrl = "";
     private String systemInstruction = "你是通用任务执行器，输出必须为 JSON。";
+    /** 兼容旧配置；模式专属轮次未设置为正数时使用该值。 */
     private int maxRounds = 10;
+    private int directMaxRounds = 2;
+    private int plannedMaxRounds = 4;
+    private int reactMaxRounds = 6;
+    private int reactMaxToolCalls = 5;
     private int planMaxRetry = 2;
     private boolean finalAnswerValidationEnabled = false;
     private double temperature = 0.2;
@@ -62,6 +67,49 @@ public class AgentRuntimeProperties {
 
     public void setMaxRounds(int maxRounds) {
         this.maxRounds = maxRounds;
+    }
+
+    public int getDirectMaxRounds() {
+        return directMaxRounds;
+    }
+
+    public void setDirectMaxRounds(int directMaxRounds) {
+        this.directMaxRounds = directMaxRounds;
+    }
+
+    public int getPlannedMaxRounds() {
+        return plannedMaxRounds;
+    }
+
+    public void setPlannedMaxRounds(int plannedMaxRounds) {
+        this.plannedMaxRounds = plannedMaxRounds;
+    }
+
+    public int getReactMaxRounds() {
+        return reactMaxRounds;
+    }
+
+    public void setReactMaxRounds(int reactMaxRounds) {
+        this.reactMaxRounds = reactMaxRounds;
+    }
+
+    public int getReactMaxToolCalls() {
+        return reactMaxToolCalls;
+    }
+
+    public void setReactMaxToolCalls(int reactMaxToolCalls) {
+        this.reactMaxToolCalls = reactMaxToolCalls;
+    }
+
+    /** 根据执行模式解析决策轮次，非正的模式配置回退到旧版 maxRounds。 */
+    public int resolveMaxRounds(String executionMode) {
+        int configured = switch (executionMode == null ? "" : executionMode) {
+            case "direct" -> directMaxRounds;
+            case "planned" -> plannedMaxRounds;
+            case "react" -> reactMaxRounds;
+            default -> maxRounds;
+        };
+        return configured > 0 ? configured : Math.max(1, maxRounds);
     }
 
     public int getPlanMaxRetry() {

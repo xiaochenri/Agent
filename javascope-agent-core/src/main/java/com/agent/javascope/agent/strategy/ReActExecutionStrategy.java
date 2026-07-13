@@ -10,47 +10,46 @@ import com.agent.javascope.model.AgentChatModelClient;
 import com.agent.javascope.prompt.AgentPromptProvider;
 import com.agent.javascope.runtime.AgentRuntimeProperties;
 import com.agent.javascope.tool.runtime.AgentToolExecutor;
-import com.agent.javascope.tools.validation.StepValidatorTool;
 import com.agent.javascope.verifier.IndependentVerifierService;
 
 import java.util.List;
 import java.util.Map;
 
 /**
- * 固定可执行计划策略：计划创建时必须确定每一步的 tool 和 input，执行失败后允许 revise_plan。
+ * 动态 ReAct 策略：不创建固定计划，每轮根据已有工具观察选择下一动作。
+ * direct 复用同一内核，但由 Prompt 将其限制为一次明确的事实工具调用。
  */
-public class PlanReActExecutionStrategy extends AbstractToolLoopExecutionStrategy {
+public class ReActExecutionStrategy extends AbstractToolLoopExecutionStrategy {
 
-    public PlanReActExecutionStrategy(
+    public ReActExecutionStrategy(
             AgentRuntimeProperties properties,
             AgentPromptProvider promptProvider,
             AgentToolExecutor toolExecutor,
             AgentChatModelClient modelClient,
             AgentJsonCodecUtil json,
-            StepValidatorTool stepValidatorTool,
             IndependentVerifierService independentVerifierService,
             ExecutionLogStore executionLogStore,
             ContextManager contextManager,
             PromptAssembler promptAssembler) {
-        super(properties, promptProvider, toolExecutor, modelClient, json, true, stepValidatorTool,
+        super(properties, promptProvider, toolExecutor, modelClient, json, false, null,
                 independentVerifierService, executionLogStore, contextManager, promptAssembler);
     }
 
     @Override
     public boolean supports(RouteDecision routeDecision) {
-        return routeDecision != null
-                && "task".equals(routeDecision.getRoute())
-                && "planned".equals(routeDecision.getExecutionMode());
+        if (routeDecision == null || !"task".equals(routeDecision.getRoute())) {
+            return false;
+        }
+        String mode = routeDecision.getExecutionMode();
+        return "direct".equals(mode) || "react".equals(mode);
     }
 
-    /** planned 首轮只允许创建计划；计划建立后才暴露业务工具和 revise_plan。 */
+    /** ReAct/direct 都禁止计划工具；模型只能基于观察继续选择业务工具或结束。 */
     @Override
     protected List<Map<String, Object>> visibleToolSchemas(RuntimeState state) {
-        if (!state.latestPlan.isEmpty()) {
-            return toolSchemas;
-        }
         return toolSchemas.stream()
-                .filter(schema -> "create_plan".equals(String.valueOf(schema.get("name"))))
+                .filter(schema -> !"create_plan".equals(String.valueOf(schema.get("name")))
+                        && !"revise_plan".equals(String.valueOf(schema.get("name"))))
                 .toList();
     }
 }

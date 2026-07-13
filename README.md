@@ -28,6 +28,11 @@
   - `AgentPromptProvider`、`AgentBusinessPromptCustomizer`、`AgentToolExecutor`、`ClarificationBusinessProvider`: 业务扩展 SPI
 - `javascope-agent-model-openai`: OpenAI Chat Completions 兼容模型适配器
 - `javascope-agent-spring-boot-starter`: Spring Boot 自动配置与反射工具适配器
+- `javascope-user`: 与业务无关的统一用户、长期记忆、AI 会话和消息持久化模块
+  - `BusinessAgentHandler`：stock、code 等业务的统一接入协议
+  - `ConversationApplicationService`：会话归属校验、上下文加载、请求幂等和消息落库
+  - `CurrentUserProvider`：登录态适配边界；当前由开发环境固定用户实现
+  - MySQL 表：`app_user`、`conversation`、`conversation_message`、`agent_user_memory`
 - `stockmind-common`: 公共基础能力
   - 文档文本抽取
   - 向量构建
@@ -47,11 +52,13 @@
    - `chat`: 闲聊，直接回复
    - `meta`: 身份、能力、使用方式等元问题，直接回复
    - `task`: 股票分析、查询、推荐、检索、规划等任务，进入 ReAct 工具链
-3. 任务分支由 `ReActAgent` 在最多 `max-rounds` 轮内循环：
+3. 任务分支由 `ReActAgent` 按 direct/planned/react 各自的轮次预算循环：
    - 模型输出 `tool_calls` 或 `final_answer`
    - 需要工具时由 `ToolCallDispatcher` 执行
-   - 需要规划时先调用 `create_plan`
-   - 步骤失败、依赖阻塞或校验建议重规划时调用 `revise_plan`
+   - `direct` 只执行一个提前可确定的事实工具调用
+   - `react` 不创建计划，每轮根据已有工具观察动态选择下一业务工具
+   - `planned` 先调用 `create_plan` 创建固定的 `tool + input` 步骤链
+   - planned 步骤失败、依赖阻塞或校验建议重规划时调用 `revise_plan`
    - 缺少关键槽位时调用 `clarify_requirement`，并等待用户补充
 4. 每个关键动作会同时写入两类数据：
    - 完整执行轨迹：用户输入、模型 Prompt/响应、工具请求/结果、最终答案等，供调试与回放
@@ -85,9 +92,17 @@ ToolRegistry -> ToolAuthorizationPolicy -> ToolMiddlewareChain -> ToolInvoker
 
 `DefaultAgentToolExecutor` 作为统一门面串联上述层次，Agent Core 不再依赖具体反射执行细节。
 
-任务路由会同时给出执行模式：`direct` 用于单步事实查询，允许直接调用必要业务工具；`planned` 用于分析、推荐及多步骤任务，首轮仅向模型暴露 `create_plan`。因此计划门禁不会以拒绝一次正常工具调用的方式消耗推理轮次。
+任务路由会同时给出执行模式：
 
-执行层通过 `ExecutionStrategy` 抽象扩展。`ReActAgent` 统一创建 Trace、执行路由并选择策略：chat/meta 由 `DirectReplyExecutionStrategy` 直接回复，task 由 `PlanReActExecutionStrategy` 承接既有 ReAct、计划、重规划和最终收口行为。后续可注册工作流、并行或多 Agent 策略，而不修改现有计划型策略。
+| 模式 | 使用条件 | 典型任务 |
+|---|---|---|
+| `direct` | 对象明确，执行前可以确定只需一个事实工具 | 查询股票所属行业、读取指定行情 |
+| `planned` | 执行前可以确定完整步骤链，并为每一步指定 `tool + input + dependency` | 固定指标计算、确定性数据转换、强调审计的查询链 |
+| `react` | 目标明确，但下一工具依赖上一观察，无法预先可靠确定完整工具链 | 下跌原因调查、异常诊断、证据核验、自适应检索 |
+
+“多步骤”不自动等于 `planned`。判断边界是：如果第一次工具调用之前就能可靠写出完整可执行工具链，使用 `planned`；如果工具顺序必须随中间证据调整，使用 `react`。planned 首轮只暴露 `create_plan`，react/direct 则从工具列表和运行时两层屏蔽 `create_plan`、`revise_plan`。
+
+执行层通过 `ExecutionStrategy` 抽象扩展。`ReActAgent` 统一创建 Trace、执行路由并选择策略：chat/meta 由 `DirectReplyExecutionStrategy` 回复；task/direct 和 task/react 由 `ReActExecutionStrategy` 执行；task/planned 由 `PlanReActExecutionStrategy` 执行。两个任务策略共用一套 Action/Observation 循环，差异仅在路由条件、可见工具和 Prompt 约束，避免形成嵌套 ReAct 内核。
 
 计划重规划采用补丁协议：`revise_plan` 接收全部 `failed_steps`（含稳定 `step_id`），并返回 `replacements`。每个 replacement 指定 `replace_step_id` 和替代步骤列表；运行时仅替换这些失败或阻塞步骤，保留成功步骤及其输出，并按步骤指纹复用结果，避免重复调用。
 
@@ -164,7 +179,12 @@ export AGENT_RUNTIME_FINAL_ANSWER_VALIDATION_ENABLED=false
 - `java.agent-runtime.api-key`: 模型 API Key
 - `java.agent-runtime.base-url`: OpenAI 兼容 Chat Completions 地址
 - `java.agent-runtime.system-instruction`: 基础系统提示词
-- `java.agent-runtime.max-rounds`: ReAct 最大推理轮次
+- `java.agent-runtime.max-rounds`: 未知模式及旧配置的兼容轮次上限
+- `java.agent-runtime.direct-max-rounds`: direct 决策轮次，默认 2
+- `java.agent-runtime.planned-max-rounds`: planned 决策轮次，默认 4；计划内部步骤不占模型决策轮次
+- `java.agent-runtime.react-max-rounds`: react 决策轮次，默认 6
+- `java.agent-runtime.react-max-tool-calls`: react 工具动作上限，默认 5
+- 最终合成始终额外保留 1 次模型调用，且禁止继续调用工具
 - `java.agent-runtime.plan-max-retry`: 规划 JSON 重试次数
 - `java.agent-runtime.final-answer-validation-enabled`: 是否开启最终答案独立校验
 - `java.agent-runtime.temperature`: 模型温度
@@ -189,6 +209,30 @@ mvn -pl stockmind-bootstrap -am spring-boot:run
 ```
 
 ## HTTP 接口
+
+### 持久化会话 API
+
+```bash
+# 创建 stock 会话
+curl -X POST 'http://localhost:8080/api/v1/conversations' \
+  -H 'Content-Type: application/json' \
+  -d '{"businessCode":"stock","title":"AAPL 分析"}'
+
+# 发送消息；requestId 用于安全重试和幂等
+curl -X POST 'http://localhost:8080/api/v1/conversations/{conversationId}/messages' \
+  -H 'Content-Type: application/json' \
+  -d '{"requestId":"req-001","input":"分析一下 AAPL"}'
+
+curl 'http://localhost:8080/api/v1/conversations?businessCode=stock'
+curl 'http://localhost:8080/api/v1/conversations/{conversationId}/messages'
+
+curl 'http://localhost:8080/api/v1/users/me'
+curl -X PATCH 'http://localhost:8080/api/v1/users/me' \
+  -H 'Content-Type: application/json' \
+  -d '{"displayName":"演示用户","avatarUrl":null}'
+```
+
+`businessCode` 在会话创建后不可修改。新版 API 的用户身份来自 `CurrentUserProvider`，不接受请求体伪造的 `userId`；尚未接入登录系统时由 `JAVASCOPE_DEVELOPMENT_USER_ID` 提供开发用户。
 
 ### 简单 demo
 

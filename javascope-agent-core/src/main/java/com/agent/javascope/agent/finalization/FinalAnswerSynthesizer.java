@@ -118,11 +118,18 @@ public class FinalAnswerSynthesizer {
      * 无论计划是否已建立或已终态，轮次耗尽后都再触发一次禁止工具调用的最终汇总。
      */
     private boolean tryFinalSynthesis(String input, RuntimeState state, ReasoningCallback reasoningCallback) {
-        state.validationFeedback = isPlanTerminal(state)
-                ? "计划执行已结束。请基于全部执行日志输出 final_answer，不要继续调用工具。"
-                : "推理轮次已耗尽或计划尚未建立。请仅基于已有执行日志输出保守的 final_answer，"
-                        + "明确证据、局限和后续建议，不要继续调用工具。";
-        state.lastResponse = reasoningCallback.reason(properties.getMaxRounds() + 1);
+        String executionMode = state.routeDecision.getExecutionMode();
+        if ("planned".equals(executionMode) && isPlanTerminal(state)) {
+            state.validationFeedback = "计划执行已结束。请基于全部执行日志输出 final_answer，不要继续调用工具。";
+        } else if ("react".equals(executionMode)) {
+            state.validationFeedback = "ReAct 推理轮次已耗尽。请仅基于已有观察输出保守的 final_answer，"
+                    + "明确证据、局限和后续建议，不要继续调用工具。";
+        } else {
+            state.validationFeedback = "推理轮次已耗尽或计划尚未完成。请仅基于已有执行日志输出保守的 final_answer，"
+                    + "明确证据、局限和后续建议，不要继续调用工具。";
+        }
+        int finalSynthesisRound = properties.resolveMaxRounds(executionMode) + 1;
+        state.lastResponse = reasoningCallback.reason(finalSynthesisRound);
         List<AgentToolCall> toolCalls = toolCallExtractor.extract(state.lastResponse);
         if (!toolCalls.isEmpty()) {
             state.riskFlags.add("final_synthesis_tool_call_unexpected");
@@ -134,7 +141,7 @@ public class FinalAnswerSynthesizer {
         }
         state.lastValidation = validateFinalAnswer(input, state.latestPlan, state.executionLog, state.lastFinalAnswer);
         if (!state.lastValidation.passed()) {
-            handleValidationFailure(properties.getMaxRounds() + 1, state);
+            handleValidationFailure(finalSynthesisRound, state);
             return false;
         }
         return true;
@@ -177,7 +184,7 @@ public class FinalAnswerSynthesizer {
      * 将验证失败信息写回 state，下一轮 reasoning 会基于这些反馈修正。
      */
     private void handleValidationFailure(int round, RuntimeState state) {
-        state.validationFeedback = buildValidationFeedback(state.lastValidation);
+        state.validationFeedback = buildValidationFeedback(state.lastValidation, state.routeDecision.getExecutionMode());
         state.riskFlags.add("final_answer_validation_failed_round_" + round);
         if (state.lastValidation.suggestReplan()) {
             state.riskFlags.add("final_answer_suggest_replan_round_" + round);
@@ -202,7 +209,7 @@ public class FinalAnswerSynthesizer {
     /**
      * 将验证器结构化结果压缩成模型可读的修正提示。
      */
-    private String buildValidationFeedback(ValidationResult validation) {
+    private String buildValidationFeedback(ValidationResult validation, String executionMode) {
         List<String> feedback = new ArrayList<>(validation.reasons());
         if (!validation.summary().isBlank()) {
             feedback.add("summary=" + validation.summary());
@@ -213,7 +220,13 @@ public class FinalAnswerSynthesizer {
         }
         feedback.add("suggest_replan=" + validation.suggestReplan());
         if (validation.suggestReplan()) {
-            feedback.add("请优先调用 revise_plan 修正当前计划；若当前没有计划，请调用 create_plan 补齐证据");
+            if ("planned".equals(executionMode)) {
+                feedback.add("请优先调用 revise_plan 修正当前计划；若当前没有计划，请调用 create_plan 补齐证据");
+            } else if ("react".equals(executionMode)) {
+                feedback.add("请根据验证缺口选择新的业务工具补齐证据；不要创建计划，也不要重复相同 tool+input");
+            } else {
+                feedback.add("当前 direct 证据不足，请给出保守结论并明确局限，不要创建计划");
+            }
             feedback.add("key_evidence 可为总结表达，不要求逐字引用工具原文；但必须可映射到 execution_log，建议补充 key_evidence_refs");
         }
         return String.join("; ", feedback);

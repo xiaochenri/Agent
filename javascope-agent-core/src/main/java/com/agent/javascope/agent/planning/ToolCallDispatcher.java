@@ -38,6 +38,14 @@ public class ToolCallDispatcher {
     /** 计划创建/修订后立即执行当前计划。 */
     private final PlanExecutor planExecutor;
 
+    /** 用于 direct/react 的纯工具分发器，不装配计划执行器。 */
+    public ToolCallDispatcher(
+            AgentPromptProvider promptProvider,
+            AgentToolExecutor toolExecutor,
+            AgentJsonCodecUtil json) {
+        this(promptProvider, toolExecutor, json, null);
+    }
+
     public ToolCallDispatcher(
             AgentPromptProvider promptProvider,
             AgentToolExecutor toolExecutor,
@@ -68,12 +76,12 @@ public class ToolCallDispatcher {
                 state.riskFlags.add("tool_call_direct_not_allowed_" + toolName);
                 continue;
             }
-            if ("direct".equals(state.routeDecision.getExecutionMode())
+            if (!"planned".equals(state.routeDecision.getExecutionMode())
                     && ("create_plan".equals(toolName) || "revise_plan".equals(toolName))) {
                 state.executionLog.add(buildToolLog(round, toolName, call.getInput(),
-                        buildDirectCallFailure(toolName, "planning tool is not allowed in direct execution mode")));
-                state.riskFlags.add("direct_mode_planning_tool_blocked_" + toolName);
-                state.validationFeedback = "当前为单步直达任务，请基于已有工具结果输出 final_answer，不要创建或修订计划。";
+                        buildDirectCallFailure(toolName, "planning tool is only allowed in planned execution mode")));
+                state.riskFlags.add("non_planned_mode_planning_tool_blocked_" + toolName);
+                state.validationFeedback = "当前执行模式不允许创建或修订计划；请基于已有观察选择业务工具，或输出 final_answer。";
                 continue;
             }
             if (requiresPlanGate(definition, toolName, state)) {
@@ -108,9 +116,15 @@ public class ToolCallDispatcher {
                 return ToolDispatchStatus.CONTINUE_REASONING;
             }
             applyPlanResult(toolName, resultJson, state);
-            if (shouldExecutePlanAfterToolCall(toolName, state, resultJson)
-                    && !planExecutor.execute(input, round, state)) {
-                return ToolDispatchStatus.CONTINUE_REASONING;
+            if (shouldExecutePlanAfterToolCall(toolName, state, resultJson)) {
+                if (planExecutor == null) {
+                    state.riskFlags.add("plan_payload_blocked_outside_planned_mode");
+                    state.validationFeedback = "当前执行策略未装配计划执行器，不能执行计划型工具结果。";
+                    return ToolDispatchStatus.CONTINUE_REASONING;
+                }
+                if (!planExecutor.execute(input, round, state)) {
+                    return ToolDispatchStatus.CONTINUE_REASONING;
+                }
             }
         }
         return ToolDispatchStatus.CONTINUE_REASONING;
