@@ -23,16 +23,12 @@ public interface ClarificationBusinessProvider {
         return "";
     }
 
-    /**
-     * 为指定槽位提供业务候选项，例如股票场景可给出推荐代码、时间范围或分析维度。
-     */
+    /** 为指定槽位提供领域候选项。 */
     default List<String> slotCandidates(String userInput, String slotName) {
         return List.of();
     }
 
-    /**
-     * 基于用户输入和记忆给出业务默认值；返回空串时由通用工具使用兜底默认值。
-     */
+    /** 基于用户输入和记忆给出领域默认值。 */
     default String defaultValue(String userInput, String slotName, String memory) {
         return "";
     }

@@ -41,7 +41,7 @@
   - `StockMindApplication`: 应用启动类
   - `AgentDemoController`: demo、流式对话、会话对话、记忆管理接口
   - `StockAgentBusinessConfiguration`: 股票场景 prompt 定制与澄清策略
-  - 股票业务工具按类型拆分：`MarketDataTools`（行情/K线）、`TechnicalIndicatorTools`（技术指标）、`ResearchEvidenceTools`（新闻/知识库）、`StockAnalysisTools`（综合总结）
+  - 股票业务工具按类型拆分：`MarketDataTools`（行情/K线）、`TechnicalIndicatorTools`（技术指标）、`ResearchEvidenceTools`（新闻/知识库/结构化财报）、`FinancialMetricTools`（EPS/PE 确定性计算）、`StockAnalysisTools`（综合总结）
   - `UserMemoryService`: 用户记忆的读写、TTL 和 prompt 拼接
 - `stockmind-domain`、`stockmind-application`、`stockmind-infrastructure`: 标准分层模块，目前主要作为后续业务扩展边界保留
 
@@ -57,9 +57,9 @@
    - 需要工具时由 `ToolCallDispatcher` 执行
    - `direct` 只执行一个提前可确定的事实工具调用
    - `react` 不创建计划，每轮根据已有工具观察动态选择下一业务工具
-   - `planned` 先调用 `create_plan` 创建固定的 `tool + input` 步骤链
+   - `planned` 第一轮由模型在 `clarify_requirement` 和 `create_plan` 之间二选一；信息完整时创建固定的 `tool + input` 步骤链
    - planned 步骤失败、依赖阻塞或校验建议重规划时调用 `revise_plan`
-   - 缺少关键槽位时调用 `clarify_requirement`，并等待用户补充
+   - 缺少完成目标必需且无法安全消解的业务语义时调用 `clarify_requirement`，并等待用户补充；参数格式、schema 和工具适配问题不属于需求澄清
 4. 每个关键动作会同时写入两类数据：
    - 完整执行轨迹：用户输入、模型 Prompt/响应、工具请求/结果、最终答案等，供调试与回放
    - 工作上下文：仅选取当前计划、最近历史、失败约束和证据索引，供下一轮模型决策
@@ -92,6 +92,17 @@ ToolRegistry -> ToolAuthorizationPolicy -> ToolMiddlewareChain -> ToolInvoker
 
 `DefaultAgentToolExecutor` 作为统一门面串联上述层次，Agent Core 不再依赖具体反射执行细节。
 
+### 工具强契约
+
+`@AgentTool` 同时声明 `inputSchema` 和 `outputSchema`，两者既进入模型可见的工具定义，也由 Core 确定性执行：
+
+- 调用前：`JsonSchemaToolContractValidator` 校验 type、required、properties、items、enum、pattern、format、数值范围和 additionalProperties。
+- 调用后：无论结果来自业务方法、中间件还是缓存，统一校验完整工具 Envelope 和 data 输出结构。
+- 业务语义：业务模块通过 `ToolSemanticValidator` 校验 JSON Schema 无法表达的跨字段关系，例如财报期间与报告类型一致、calculation_ready 与 EPS 来源一致、PE 必须等于 price/EPS。
+- 计划约束：`required_outputs` 和步骤 `$ref` 必须来自工具 `outputSchema`；显式强契约工具禁止规划模型发明字段。
+
+契约失败统一返回 `tool_input_contract_violation` 或 `tool_output_contract_violation`。输出契约失败会保留原始 data 用于审计，但状态改为 failed，后续计划步骤不能继续消费。
+
 任务路由会同时给出执行模式：
 
 | 模式 | 使用条件 | 典型任务 |
@@ -100,11 +111,15 @@ ToolRegistry -> ToolAuthorizationPolicy -> ToolMiddlewareChain -> ToolInvoker
 | `planned` | 执行前可以确定完整步骤链，并为每一步指定 `tool + input + dependency` | 固定指标计算、确定性数据转换、强调审计的查询链 |
 | `react` | 目标明确，但下一工具依赖上一观察，无法预先可靠确定完整工具链 | 下跌原因调查、异常诊断、证据核验、自适应检索 |
 
-“多步骤”不自动等于 `planned`。判断边界是：如果第一次工具调用之前就能可靠写出完整可执行工具链，使用 `planned`；如果工具顺序必须随中间证据调整，使用 `react`。planned 首轮只暴露 `create_plan`，react/direct 则从工具列表和运行时两层屏蔽 `create_plan`、`revise_plan`。
+“多步骤”不自动等于 `planned`。判断边界是：如果第一次工具调用之前就能可靠写出完整可执行工具链，使用 `planned`；如果工具顺序必须随中间证据调整，使用 `react`。planned 首轮只暴露 `clarify_requirement` 与 `create_plan` 并要求二选一，react/direct 则从工具列表和运行时两层屏蔽 `create_plan`、`revise_plan`。
 
 执行层通过 `ExecutionStrategy` 抽象扩展。`ReActAgent` 统一创建 Trace、执行路由并选择策略：chat/meta 由 `DirectReplyExecutionStrategy` 回复；task/direct 和 task/react 由 `ReActExecutionStrategy` 执行；task/planned 由 `PlanReActExecutionStrategy` 执行。两个任务策略共用一套 Action/Observation 循环，差异仅在路由条件、可见工具和 Prompt 约束，避免形成嵌套 ReAct 内核。
 
 计划重规划采用补丁协议：`revise_plan` 接收全部 `failed_steps`（含稳定 `step_id`），并返回 `replacements`。每个 replacement 指定 `replace_step_id` 和替代步骤列表；运行时仅替换这些失败或阻塞步骤，保留成功步骤及其输出，并按步骤指纹复用结果，避免重复调用。
+
+每个计划步骤同时包含自然语言 `expected_outcome` 和机器契约 `required_outputs`。后者通过 JSON 路径、类型、nullable 和可选 expected_value 校验真实工具输出；即使工具返回 `status=success`，必需字段缺失、为 null、数据质量为 partial/invalid 或 calculation_ready=false 时，步骤仍会失败。多前置依赖使用 `depends_on_step_ids` 显式表达。
+
+计划内工具调用也会写入 `observedActionFingerprints`。计划全部完成后运行时立即进入无工具的 final synthesis 状态，不再允许模型重复调用业务工具。
 
 ## 上下文与执行轨迹
 
@@ -157,6 +172,13 @@ Agent 执行
 - 时间范围
 - 分析维度
 - 买入、卖出、下单等动作确认
+
+澄清分为两类，但都由正常 Action Model 轮次决定，不增加固定的前置模型调用：
+
+- `initial`：第一次行动判断时发现缺少 P0 对象、不可默认的关键口径或高风险确认；planned 首轮在澄清与建计划之间二选一。
+- `runtime`：ReAct 根据工具观察发现必须由用户意图、业务口径或授权解决的阻塞；普通工具失败或仍可通过只读工具调查时不应澄清。
+
+`clarify_requirement` 负责校验和生成结构化澄清上下文，下一轮仍由模型生成面向用户的自然回复。它只处理缺少业务信息、实质语义歧义和用户授权，不负责把自然语言转换成工具参数，也不得因格式、编码、schema、工具失败或能力限制要求用户澄清。`ask` 必须声明 `clarification_kind` 和 `materially_different_outcomes=true`；语义歧义还必须通过 `outcome_impacts` 给出至少两个实质不同的业务后果，运行时同时提供对应候选项。`missing_slots` 仅描述用户尚未表达的业务语义。澄清动作具有最高优先级，运行时会阻止它与 `create_plan` 或业务工具在同一轮混合执行。规划器只接收 `allowed_in_plan_step=true` 的工具；股票业务还会校验 `symbol/ticker` 的来源，禁止使用用户未明确提供的示例标的。
 
 ## 配置
 

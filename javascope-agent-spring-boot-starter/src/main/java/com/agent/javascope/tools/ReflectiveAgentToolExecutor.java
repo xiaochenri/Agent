@@ -194,6 +194,7 @@ public class ReflectiveAgentToolExecutor implements ToolRegistry, ToolInvoker, S
         definition.setTimeoutMs(annotation.timeoutMs());
         definition.setInputSchema(resolveSchema(annotation.inputSchema(), inferInputSchema(method)));
         definition.setOutputSchema(resolveSchema(annotation.outputSchema(), defaultOutputSchema()));
+        definition.setStrictOutputContract(annotation.outputSchema() != null && !annotation.outputSchema().isBlank());
         definition.setExamples(parseExamples(annotation.examples()));
         return definition;
     }

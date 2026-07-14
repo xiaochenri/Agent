@@ -82,6 +82,7 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
 
         for (int round = 1; round <= maxRounds; round++) {
             if ("react".equals(executionMode)
+                    && !state.inClarificationStage
                     && state.observedActionFingerprints.size() >= reactMaxToolCalls) {
                 state.riskFlags.add("react_tool_call_budget_exhausted");
                 state.validationFeedback = "ReAct 工具调用预算已耗尽。请基于已有观察生成保守的 final_answer，"
@@ -114,9 +115,16 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
                 }
                 emitToolCalls(eventConsumer, toolCalls);
                 ToolDispatchStatus dispatchStatus = toolCallDispatcher.execute(input, round, toolCalls, state);
+                if (state.inClarificationStage) {
+                    emitClarificationEvent(eventConsumer, state);
+                }
                 emittedPlanLifecycleCount = emitPlanLifecycle(eventConsumer, state, emittedPlanLifecycleCount);
                 if (dispatchStatus == ToolDispatchStatus.FINISHED) {
                     return state;
+                }
+                if (state.planExecutionCompleted) {
+                    emitStreamEvent(eventConsumer, "process", "计划步骤已完成，正在生成最终答案");
+                    break;
                 }
                 continue;
             }
@@ -125,16 +133,77 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
             }
         }
 
+        // 澄清恰好发生在最后一个正常轮次时，额外保留一次模型调用生成面向用户的澄清回复。
+        if (state.inClarificationStage) {
+            int clarificationRound = maxRounds + 1;
+            state.lastResponse = reasoning(
+                    input, clarificationRound, state, eventConsumer, useModelStream);
+            List<AgentToolCall> unexpectedCalls = toolCallExtractor.extract(state.lastResponse);
+            if (!unexpectedCalls.isEmpty()) {
+                state.riskFlags.add("clarification_final_tool_call_blocked");
+            }
+            state.lastFinalAnswer = json.asMap(state.lastResponse.get("final_answer"));
+            if (state.lastFinalAnswer == null || state.lastFinalAnswer.isEmpty()) {
+                state.lastFinalAnswer =
+                        finalAnswerSynthesizer.buildClarificationFinalAnswerFallback(state.clarificationData);
+            }
+            state.blockedReason = "等待用户确认澄清信息";
+            state.riskFlags.add("awaiting_user_clarification");
+            return state;
+        }
+
         finalAnswerSynthesizer.handleRoundsExhausted(input, state, round -> reasoning(input, round, state));
         return state;
     }
 
-    /** direct/react 每轮只观察一个动作结果，并拒绝重复的 tool+input。 */
+    /**
+     * 澄清是最高优先级控制动作，任何模式都不得把它与计划或业务工具混合执行；
+     * direct/react 另外要求每轮只观察一个动作结果，并拒绝重复的 tool+input。
+     */
     private List<AgentToolCall> constrainAdaptiveActions(
             List<AgentToolCall> toolCalls, RuntimeState state) {
         String mode = state.routeDecision.getExecutionMode();
+        List<AgentToolCall> clarificationCalls = toolCalls.stream()
+                .filter(call -> "clarify_requirement".equals(call.getName()))
+                .toList();
+        if (!clarificationCalls.isEmpty()) {
+            if (toolCalls.size() > 1) {
+                state.riskFlags.add("clarification_mixed_actions_blocked");
+                state.validationFeedback = "澄清动作不得与 create_plan 或业务工具同时执行；"
+                        + "本轮只执行 clarify_requirement。";
+            }
+            AgentToolCall clarification = clarificationCalls.get(0);
+            String fingerprint = "clarify_requirement|" + json.toJson(clarification.getInput());
+            if (!state.observedActionFingerprints.add(fingerprint)) {
+                state.riskFlags.add("repeated_clarification_action_blocked");
+                state.validationFeedback = "相同澄清请求已经执行过；请使用已有澄清结果生成回复，"
+                        + "不要再次调用 clarify_requirement。";
+                return List.of();
+            }
+            return List.of(clarification);
+        }
         if ("planned".equals(mode)) {
-            return toolCalls;
+            if (state.latestPlan.isEmpty() && toolCalls.size() > 1) {
+                state.riskFlags.add("planned_initial_multiple_actions_truncated");
+                state.validationFeedback = "planned 首轮只能选择一个控制动作，本轮仅执行第一项。";
+                return List.of(toolCalls.get(0));
+            }
+            if (state.latestPlan.isEmpty()) {
+                return toolCalls;
+            }
+            AgentToolCall selected = toolCalls.get(0);
+            if (toolCalls.size() > 1) {
+                state.riskFlags.add("planned_multiple_actions_truncated");
+                state.validationFeedback = "计划建立后的动态修正每轮只允许一个动作；本轮仅执行第一项。";
+            }
+            String fingerprint = json.normalize(selected.getName(), "") + "|" + json.toJson(selected.getInput());
+            if (!state.observedActionFingerprints.add(fingerprint)) {
+                state.riskFlags.add("planned_repeated_action_blocked");
+                state.validationFeedback = "相同 tool+input 已在计划或后续推理中执行过；"
+                        + "请选择不同工具、调用 revise_plan，或基于现有证据结束。";
+                return List.of();
+            }
+            return List.of(selected);
         }
         AgentToolCall selected = toolCalls.get(0);
         if (toolCalls.size() > 1) {
@@ -150,6 +219,24 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
             return List.of();
         }
         return List.of(selected);
+    }
+
+    /** 向流式页面发送结构化澄清事件，页面可区分第一轮澄清和执行中澄清。 */
+    private void emitClarificationEvent(
+            Consumer<Map<String, Object>> eventConsumer, RuntimeState state) {
+        if (eventConsumer == null) {
+            return;
+        }
+        Map<String, Object> data = state.clarificationData;
+        Map<String, Object> event = new LinkedHashMap<>();
+        event.put("type", "process");
+        event.put("category", "clarification");
+        event.put("phase", json.normalize(String.valueOf(data.get("phase")), "initial"));
+        event.put("action", json.normalize(String.valueOf(data.get("action")), "ask"));
+        event.put("message", "runtime".equals(data.get("phase"))
+                ? "执行过程中发现必须由用户确认的关键分支，正在生成澄清问题"
+                : "开始执行前缺少关键信息，正在生成澄清问题");
+        eventConsumer.accept(event);
     }
 
     private Map<String, Object> reasoning(String input, int round, RuntimeState state) {
@@ -178,7 +265,7 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
                 systemInstruction,
                 input,
                 state.routeDecision.getExecutionMode(),
-                visibleToolSchemas(state),
+                state.finalSynthesisStage ? List.of() : visibleToolSchemas(state),
                 context,
                 promptBudget());
         state.trace.record(ExecutionEventType.ACTION_MODEL_REQUESTED, Map.of(

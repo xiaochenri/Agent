@@ -28,10 +28,10 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                 - chat/meta 的 execution_mode 必须为 none
                 - 不确定时优先输出 task
                 判定示例：
-                - “查询 600519 所属行业” => task/direct
-                - “读取指定财报后计算 EPS 和 PE” => task/planned
-                - “调查 600519 最近为什么下跌” => task/react
-                - “核验这条市场传闻是否可信” => task/react
+                - “查询某个已知资源的单一属性” => task/direct
+                - “读取指定数据源、提取字段并完成派生计算” => task/planned
+                - “调查某个异常现象的原因” => task/react
+                - “核验一条待证信息是否可信” => task/react
                 约束：
                 - 只允许 route=chat/meta/task
                 - confidence 必须在 0 到 1 之间
@@ -76,6 +76,19 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
             String latestPlanJson,
             String executionLogJson,
             String validationFeedback) {
+        boolean hasPlan = hasStructuredContent(latestPlanJson);
+        boolean clarificationAvailable = toolsJson != null && toolsJson.contains("\"clarify_requirement\"");
+        boolean clarificationResponsePhase = validationFeedback != null
+                && validationFeedback.contains("不要调用任何工具，仅输出 final_answer");
+        String modeRules = clarificationResponsePhase
+                ? ""
+                : actionModeRules(executionMode, hasPlan, clarificationAvailable);
+        String clarificationRules = clarificationAvailable && !clarificationResponsePhase ? """
+                - clarify_requirement 只处理无法从上下文、惯例或安全默认中消解的业务语义或授权问题
+                - 参数抽取、格式/编码/schema 适配、工具失败、证据不足和能力限制不属于需求澄清
+                - 同义表达和可确定的语义映射不是不同业务分支；能安全默认时直接执行并披露默认值
+                - runtime 澄清仅限新证据揭示了会产生实质不同业务结果、且必须由用户决定的分支
+                """ : "";
         return """
                 你是系统级任务控制器。仅输出 JSON：
                 {
@@ -88,33 +101,54 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                   }
                 }
                 规则：
-                - 需要调用工具时，填写 tool_calls；不需要时 tool_calls=[]
-                - tool_calls.name 必须来自“可用工具”
-                - 当前执行模式=%s：direct 只完成一个已知事实工具调用；react 根据最新观察动态选择下一业务工具；planned 且最新计划为空时只能调用 create_plan
-                - 先做意图判定：非任务型请求（身份问答、能力介绍、闲聊问候）禁止进入工具链，直接自然回答
-                - 任务型请求（analysis/recommendation/query_with_constraints/execution_request）才允许进入工具链
-                - 若可用工具中包含 clarify_requirement，按信息缺口分级：P0（对象缺失/不可逆动作对象缺失）必须澄清；P1（存在歧义）可先按默认执行并轻量确认；P2（风格偏好）直接执行
-                - 分析维度缺失但可采用业务默认维度时，不要调用 clarify_requirement，直接进入执行
-                - 调用 clarify_requirement 成功后，下一轮必须停止工具调用并仅输出 final_answer（tool_calls=[]）
-                - 澄清阶段 final_answer 建议模板：先说明已理解的任务对象与目标，再给“我已识别/还缺关键信息/可选关注维度/最短输入示例”
-                - 澄清阶段 final_answer 映射：core_conclusions=模板主结论与已识别项；key_evidence=已识别信息+缺失信息；risk_points=继续执行风险；next_actions=明确下一步操作（补充缺失字段+最短回复示例+可选维度建议）
-                - direct/react 模式不得调用 create_plan/revise_plan；planned 模式在已有计划后按计划状态继续推进
-                - react 模式每轮必须先检查执行日志：证据不足时只选择一个最能减少不确定性的业务工具，观察结果后再决定下一动作；证据足够时立即输出 final_answer
-                - react 模式不得预先枚举并机械执行固定工具链，不得重复相同 tool+input；下一动作必须由已有观察支持
-                - 计划执行中出现步骤失败、前置依赖阻塞、执行结果与预期不一致、或校验反馈 suggest_replan=true 时，优先调用 revise_plan；仅当当前无计划时调用 create_plan
-                - 不允许在存在失败反馈后继续沿用原计划硬执行；必须先 revise_plan 再继续
-                - 结论无法从执行日志中找到证据时，不要直接给最终结论；planned 使用规划或计划修正工具，react 使用合适的业务工具继续收集证据
-                - 历史记忆中 type=business_decision 是业务工具给出的决策状态：recommended_action=FINAL_ANSWER 且 repeat_policy=REUSE_EXISTING_RESULT 时，应优先复用已完成范围的证据输出 final_answer；仅当用户问题提出了 completed_scopes 以外的新证据需求、时间范围/对象/口径发生变化，或 missing_scopes 非空时，才继续调用工具
-                - business_decision 仅提供决策依据，不是运行时强制指令；请结合用户问题自行判断
-                - business_decision 如含 answer_context，final_answer 必须以其中的 core_conclusions、key_evidence、risk_points、next_actions 为主要材料，改写为面向用户的自然结论；严禁在最终回答中提及 business_decision、completed_scopes、历史记忆、计划步骤或“应当输出最终答案”等内部过程
+                - 每轮只能二选一：调用“可用工具”，或输出 final_answer；不得同时输出
+                - 工具名称和输入必须符合 input_schema；只能引用 output_schema 声明且校验成功的输出字段
+                - 若当前输入实际不需要任务执行，直接面向用户回答，不调用工具
+                - 优先遵守“当前约束与校验反馈”；最终结论必须可追溯到相关执行历史
+                当前执行模式：%s
+                %s%s
                 系统提示：%s
                 用户问题：%s
-                历史记忆：%s
+                证据摘要：%s
                 可用工具：%s
                 最新计划：%s
-                执行日志：%s
-                校验反馈：%s
-                """.formatted(executionMode, systemPrompt, input, memoryJson, toolsJson, latestPlanJson, executionLogJson, validationFeedback);
+                相关执行历史：%s
+                当前约束与校验反馈：%s
+                """.formatted(
+                        executionMode,
+                        modeRules,
+                        clarificationRules,
+                        systemPrompt,
+                        input,
+                        memoryJson,
+                        toolsJson,
+                        latestPlanJson,
+                        executionLogJson,
+                        validationFeedback);
+    }
+
+    private String actionModeRules(String executionMode, boolean hasPlan, boolean clarificationAvailable) {
+        return switch (executionMode == null ? "" : executionMode) {
+            case "direct" -> "- direct：最多调用一个完成已知事实查询所需的工具；证据不足时给出保守结论和局限。\n";
+            case "react" -> "- react：每轮根据已有观察选择一个信息增益最大的未重复工具；证据足够时立即回答，不预先执行固定工具链。\n";
+            case "planned" -> hasPlan
+                    ? "- planned：按当前计划状态继续；步骤失败、阻塞或校验要求重规划时使用 revise_plan，不得沿用已失败计划。\n"
+                    : clarificationAvailable
+                            ? "- planned 首轮：业务语义完整时调用 create_plan，否则调用 clarify_requirement；本轮只选一个控制动作。\n"
+                            : "- planned 首轮：业务语义完整时调用 create_plan；本轮只选一个控制动作。\n";
+            default -> "";
+        };
+    }
+
+    private boolean hasStructuredContent(String json) {
+        if (json == null) {
+            return false;
+        }
+        String value = json.trim();
+        return !value.isEmpty()
+                && !"null".equals(value)
+                && !"{}".equals(value)
+                && !"[]".equals(value);
     }
 
     @Override
@@ -124,12 +158,15 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
               "task_understanding": {"description": "你对任务的理解和拆解", "assumptions": ["假设1"]},
               "plan": [
                 {
+                  "step_id": "稳定且唯一的步骤ID（必填）",
                   "name": "步骤名称（必填）",
                   "description": "步骤详细描述（必填）",
                   "tool": "要调用的工具名，必须从可用工具中选取（必填，不可为空）",
                   "input": {"参数key": "参数值"},
                   "depends_on_previous": false,
-                  "expected_outcome": "期望的输出结果（必填）"
+                  "depends_on_step_ids": ["显式依赖的前序step_id"],
+                  "expected_outcome": "期望的输出结果（必填）",
+                  "required_outputs": [{"path":"data.field","type":"string|number|boolean|object|array|any","nullable":false}]
                 }
               ]
             }
@@ -143,11 +180,15 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                 强制规则（必须遵守）：
                 1. 必须输出一个 JSON 数组到 "plan" 中；步骤数量由任务复杂度和可用工具决定，不设固定上限。
                 2. "plan" 中的每一个步骤，必须包含 "tool" 和 "input" 字段，且 "tool" 必须来自以下可用工具列表中的 "name"。
-                3. 如果计划目标是需求澄清，且可用工具中存在 clarify_requirement，优先使用 clarify_requirement；仅当不存在澄清工具时，才允许用 pass/noop。
+                3. clarify_requirement/create_plan/revise_plan 都是 Agent 流程控制工具，禁止作为计划步骤；进入本规划器表示第一轮完整性判断已经通过。
                 4. "input" 不能为 null 或缺失，确保它始终是一个对象。
-                5. 只有当前步骤必须使用上一步成功产出时，才把 "depends_on_previous" 设为 true；独立步骤必须为 false。
-                6. 后续步骤需要前序结果时，input 必须使用引用而非 null。例如 {"price":{"$ref":"steps.1.data.price"}}；
+                5. 每个步骤必须提供唯一 step_id；需要一个或多个前序结果时填写 depends_on_step_ids，且只能引用已经定义的前序 step_id。
+                   depends_on_previous 仅用于兼容“只依赖紧邻上一步”的简单计划。
+                6. 后续步骤需要前序结果时，input 必须使用引用而非 null。例如 {"source_value":{"$ref":"steps.1.data.result_value"}}；
                    支持 steps.步骤序号.data.字段、previous.data.字段和 tools.工具名.data.字段，步骤序号从 1 开始。
+                7. 严禁凭空假设用户未提供的 P0 关键执行对象；缺少关键对象时不得使用示例值代替。
+                8. 每个步骤必须提供非空 required_outputs，path 从工具完整结果开始，例如 data.result_value；关键字段必须 nullable=false。
+                9. required_outputs 和后续 $ref 必须来自对应工具的 output_schema；禁止发明未声明字段。strict_output_contract=true 时违反该规则会被 Core 拒绝。
                 
                 仅可使用以下可用工具：%s
                 用户问题：%s
@@ -157,7 +198,8 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
             你上次输出不合法，校验错误：%s
             请严格按照以下完整 Schema 重新输出，确保每个 step 包含 tool 和 input 字段：
             %s
-            只有当前步骤必须使用上一步成功产出时，才把 "depends_on_previous" 设为 true；独立步骤必须为 false。
+            每个步骤必须提供唯一 step_id、非空 required_outputs；多步骤依赖使用 depends_on_step_ids 且只能引用前序 step_id。
+            禁止使用 clarify_requirement/create_plan/revise_plan，禁止凭空补出用户未提供的关键执行对象。
             仅可使用以下可用工具：%s
             用户问题：%s
             """.formatted(lastError, baseSchema, toolsJson, input);
@@ -198,7 +240,7 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                 本轮失败/阻塞步骤（含稳定 step_id）: %s
 
                 强制约束: 仅输出如下 JSON，不要输出 plan：
-                {"task_understanding":{},"replacements":[{"replace_step_id":"失败步骤的 step_id","steps":[{"name":"","description":"","tool":"","input":{},"expected_outcome":"","depends_on_previous":false}]}]}
+                {"task_understanding":{},"replacements":[{"replace_step_id":"失败步骤的 step_id","steps":[{"step_id":"新的唯一ID","name":"","description":"","tool":"","input":{},"expected_outcome":"","required_outputs":[{"path":"data.field","type":"string","nullable":false}],"depends_on_previous":false,"depends_on_step_ids":[]}]}]}
                 replacements 必须覆盖每个失败/阻塞 step_id；只替换这些步骤，禁止输出已成功步骤。steps 可为空，表示明确放弃该步骤。新步骤必须避免所有历史失败步骤的步骤-工具-入参组合。
 
                 禁止复用步骤指纹: %s
@@ -288,6 +330,9 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                 + " 不要调用任何工具，仅输出 final_answer。"
                 + " 你的回复必须满足“需求澄清与意图解析专家”规范："
                 + " 目标=MVI最小可执行信息量；禁止开放式提问；单次只问一轮；优先使用历史记忆。"
+                + " phase=initial 时说明开始执行前缺少的关键信息；"
+                + " phase=runtime 时必须先概括已完成的调查和新发现，再围绕 blocking_decision 提问，禁止重复询问原输入中已经明确的槽位。"
+                + " 禁止把工具参数、格式、编码、schema 或同义表达描述成用户缺失信息；semantic_ambiguity 必须依据 outcome_impacts 说明不同选择的业务后果。"
                 + " 若 action=ask（P0）时，话术必须三段："
                 + " 第一段=已理解内容；第二段=【选项A/B/C】结构化候选；第三段=推荐默认项与低负担引导。"
                 + " 若 action=confirm_before_action（P0）时，必须暂停执行并要求用户明确确认/取消/修改；"

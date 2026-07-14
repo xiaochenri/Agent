@@ -209,7 +209,7 @@ public class InputRouter {
             fallback.put("core_conclusions", List.of("我是任务型助手，可协助分析、检索、规划并给出结构化结论。"));
             fallback.put("key_evidence", List.of("当前问题被识别为 meta 问题，按直答模式返回。"));
             fallback.put("risk_points", List.of("未进入工具链，回复基于通用能力说明。"));
-            fallback.put("next_actions", List.of("你可以直接给出任务目标、对象和时间范围，我将继续处理。"));
+            fallback.put("next_actions", List.of("你可以直接给出任务目标和必要约束，我将继续处理。"));
         } else {
             fallback.put("core_conclusions", List.of("收到你的消息。"));
             fallback.put("key_evidence", List.of("当前问题被识别为 chat 闲聊场景，按直答模式返回。"));

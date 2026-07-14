@@ -11,15 +11,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.regex.Pattern;
 
 public class ClarifyRequirementTool {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     /** 业务扩展点，用于提供领域候选项、默认值、补充问题和高风险确认策略。 */
     private final ClarificationBusinessProvider businessProvider;
-    /** 通用澄清决策策略，把槽位缺失和风险信号映射为 action。 */
-    private final ClarificationDecisionPolicy decisionPolicy = new ClarificationDecisionPolicy();
 
     public ClarifyRequirementTool(ClarificationBusinessProvider businessProvider) {
         this.businessProvider = businessProvider == null ? new ClarificationBusinessProvider() {
@@ -29,8 +26,9 @@ public class ClarifyRequirementTool {
     @AgentTool(
             name = "clarify_requirement",
             title = "需求澄清",
-            description = "通用需求澄清工具。"
-                    + " 仅用于任务型请求（analysis/recommendation/query_with_constraints/execution_request）且关键信息缺失时。"
+            description = "通用业务语义澄清工具。"
+                    + " 仅用于缺少完成目标必需的业务信息、存在实质不同的业务解释或需要用户授权时。"
+                    + " 不处理参数抽取、格式/编码/schema 适配、工具失败或工具能力限制。"
                     + " 非适用场景：身份问答、能力介绍、闲聊问候。"
                     + " 输出结构化决策：action/reasoning/slots/clarification_question/default_assumption/suggested_options。",
             namespace = "system.clarification",
@@ -45,56 +43,115 @@ public class ClarifyRequirementTool {
             inputSchema = """
                     {
                       "type": "object",
-                      "properties": {
+                        "properties": {
+                        "phase": {"type": "string", "enum": ["initial", "runtime"], "description": "initial=第一轮澄清；runtime=工具观察后产生的执行中澄清。"},
                         "user_input": {"type": "string", "description": "用户原始输入，可省略，省略时 runtime 使用本轮原始输入。"},
                         "working_memory": {"type": "string", "description": "本轮可用于澄清的短期记忆。"},
                         "long_term_memory": {"type": "string", "description": "用户长期记忆或画像。"},
-                        "user_profile": {"type": "string", "description": "用户画像，long_term_memory 的兼容字段。"}
+                        "user_profile": {"type": "string", "description": "用户画像，long_term_memory 的兼容字段。"},
+                        "reason": {"type": "string", "description": "runtime 澄清必填：工具观察后为什么无法安全继续。"},
+                        "blocking_decision": {"type": "string", "description": "runtime 澄清必填：必须由用户做出的选择或授权。"},
+                        "clarification_kind": {"type": "string", "enum": ["missing_business_information", "semantic_ambiguity", "authorization"], "description": "澄清原因只能是缺少业务信息、实质语义歧义或用户授权；不得填写参数/schema/工具问题。"},
+                        "materially_different_outcomes": {"type": "boolean", "description": "缺失信息或不同选择是否会实质改变任务结果、对象或外部影响。ask 必须为 true。"},
+                        "requires_user_choice": {"type": "boolean", "description": "该阻塞是否只能由用户选择解决。"},
+                        "confirmation_required": {"type": "boolean", "description": "后续动作是否涉及副作用并需要用户确认。"},
+                        "missing_slots": {"type": "array", "items": {"type": "object"}, "description": "用户尚未表达且完成目标必需的业务语义，支持 name/label/priority/reason/candidates/default_value；禁止填写仅供下游工具使用的参数字段。"},
+                        "observed_candidates": {"type": "array", "items": {"type": "string"}, "description": "工具观察得到、会导致实质不同业务结果的候选口径或对象；同义格式不得作为不同候选。"},
+                        "outcome_impacts": {"type": "array", "items": {"type": "string"}, "description": "semantic_ambiguity 必填：逐项说明至少两个候选如何产生不同的业务结果、对象或外部影响。"},
+                        "evidence_refs": {"type": "array", "items": {"type": "string"}, "description": "支撑运行时澄清的执行日志引用。"}
                       },
                       "required": []
                     }
                     """)
     public String clarifyRequirement(Map<String, Object> input, String rawInput) {
-        String userInput = firstNonBlank(stringValue(input.get("user_input")), rawInput);
-        String normalized = userInput == null ? "" : userInput.trim();
+        // 用户原始输入优先于模型提供的 user_input，避免模型通过工具参数伪造已经存在的 P0 对象。
+        String userInput = firstNonBlank(rawInput, stringValue(input.get("user_input")));
+        String normalized = currentUserTurn(userInput);
         String workingMemory = stringValue(input.get("working_memory"));
         String longTermMemory = firstNonBlank(stringValue(input.get("long_term_memory")), stringValue(input.get("user_profile")));
+        ClarificationPhase phase = ClarificationPhase.from(input.get("phase"));
+        String runtimeReason = stringValue(input.get("reason")).trim();
+        String blockingDecision = stringValue(input.get("blocking_decision")).trim();
+        String clarificationKind = stringValue(input.get("clarification_kind")).trim();
+        boolean materiallyDifferentOutcomes = booleanValue(input.get("materially_different_outcomes"), false);
+        boolean requiresUserChoice = booleanValue(input.get("requires_user_choice"), !blockingDecision.isBlank());
+        boolean confirmationRequired = booleanValue(input.get("confirmation_required"), false);
+        List<String> observedCandidates = stringList(input.get("observed_candidates"));
+        List<String> outcomeImpacts = stringList(input.get("outcome_impacts"));
+        List<String> evidenceRefs = stringList(input.get("evidence_refs"));
+        List<Map<String, Object>> declaredSlots = mapList(input.get("missing_slots"));
 
-        boolean hasTarget = containsTarget(normalized);
-        boolean hasTimeWindow = containsTimeWindow(normalized);
-        boolean hasDimension = containsAnalysisDimension(normalized);
-        boolean isIrreversibleAction = containsIrreversibleAction(normalized);
+        String semanticPolicyError = validateSemanticBoundary(
+                phase,
+                clarificationKind,
+                materiallyDifferentOutcomes,
+                requiresUserChoice,
+                confirmationRequired,
+                blockingDecision,
+                observedCandidates,
+                outcomeImpacts,
+                declaredSlots);
+        if (!semanticPolicyError.isBlank()) {
+            return fail("clarify_requirement", semanticPolicyError, true);
+        }
 
+        // Core 只处理模型声明的抽象槽位，不内置任何领域槽位或关键词识别。
+        List<Map<String, Object>> slots = phase == ClarificationPhase.RUNTIME
+                ? runtimeSlots(blockingDecision, observedCandidates)
+                : normalizeDeclaredSlots(normalized, longTermMemory, declaredSlots);
         List<String> missingFields = new ArrayList<>();
-        if (!hasTarget) {
-            missingFields.add("分析对象");
+        for (Map<String, Object> slot : slots) {
+            String label = firstNonBlank(stringValue(slot.get("label")), stringValue(slot.get("name")));
+            if (!label.isBlank()) {
+                missingFields.add(label);
+            }
         }
-        if (!hasTimeWindow) {
-            missingFields.add("时间范围");
-        }
-        if (!hasDimension) {
-            missingFields.add("分析维度");
-        }
-        boolean needsConfirmation = isIrreversibleAction
-                || businessProvider.confirmBeforeAction(normalized, missingFields);
+        boolean needsConfirmation = businessProvider.confirmBeforeAction(normalized, missingFields);
 
         Map<String, Object> recognizedFields = new LinkedHashMap<>();
-        recognizedFields.put("analysis_object", hasTarget);
-        recognizedFields.put("time_window", hasTimeWindow);
-        recognizedFields.put("analysis_dimension", hasDimension);
-
-        List<Map<String, Object>> slots = buildSlots(normalized, longTermMemory, hasTarget, hasTimeWindow, hasDimension);
+        for (Map<String, Object> slot : slots) {
+            recognizedFields.put(stringValue(slot.get("name")), !"missing".equals(slot.get("status")));
+        }
         List<String> capabilities = businessProvider.capabilities(normalized);
         List<String> businessSuggestedReplies = businessProvider.suggestedReplies(normalized);
         List<String> extraQuestions = businessProvider.extraQuestions(normalized, missingFields);
         String nextStepHint = businessProvider.nextStepHint(normalized, missingFields);
 
-        ClarificationDecision decisionResult = decisionPolicy.decide(
-                hasTarget,
-                hasTimeWindow,
-                isIrreversibleAction,
-                needsConfirmation,
-                isAnalysisIntent(normalized));
+        ClarificationDecision decisionResult;
+        if (confirmationRequired || needsConfirmation) {
+            decisionResult = new ClarificationDecision(
+                    "confirm_before_action",
+                    firstNonBlank(runtimeReason, "后续动作包含副作用，执行前必须获得用户确认。"),
+                    "P0",
+                    true);
+        } else if (requiresUserChoice && (!blockingDecision.isBlank() || !slots.isEmpty())) {
+            // 模型已经确认该缺口必须由用户决定时，工具只校验并标准化，不能再次把 ask 降级为 direct。
+            decisionResult = new ClarificationDecision(
+                    "ask",
+                    firstNonBlank(runtimeReason, "存在必须由用户补充的关键执行条件。"),
+                    "P0",
+                    true);
+        } else if (phase == ClarificationPhase.RUNTIME) {
+            decisionResult = decideRuntimeClarification(runtimeReason, blockingDecision, false, false);
+        } else if (hasPriority(slots, "P0")) {
+            decisionResult = new ClarificationDecision(
+                    "ask",
+                    firstNonBlank(runtimeReason, "存在必须由用户补充的关键执行条件。"),
+                    "P0",
+                    true);
+        } else if (!slots.isEmpty()) {
+            decisionResult = new ClarificationDecision(
+                    "execute_with_guess",
+                    "非关键槽位缺失，可使用领域默认值继续执行。",
+                    "P1",
+                    false);
+        } else {
+            decisionResult = new ClarificationDecision(
+                    "direct_execute",
+                    "未声明需要澄清的关键槽位，继续执行。",
+                    "P2",
+                    false);
+        }
         String action = decisionResult.action();
         String reasoning = decisionResult.reasoning();
         String clarificationQuestion = "";
@@ -102,19 +159,25 @@ public class ClarifyRequirementTool {
         List<String> suggestedOptions;
 
         if ("ask".equals(action)) {
-            suggestedOptions = buildAskOptions(normalized, hasTarget, hasTimeWindow);
-            clarificationQuestion = buildStructuredQuestion(suggestedOptions, extraQuestions);
+            suggestedOptions = !observedCandidates.isEmpty()
+                    ? formatRuntimeCandidates(observedCandidates)
+                    : optionsFromSlots(slots);
+            clarificationQuestion = phase == ClarificationPhase.RUNTIME
+                    ? buildRuntimeQuestion(blockingDecision, suggestedOptions)
+                    : buildStructuredQuestion(suggestedOptions, extraQuestions);
         } else if ("confirm_before_action".equals(action)) {
-            suggestedOptions = List.of("【A】确认执行", "【B】取消", "【C】修改对象或范围");
+            suggestedOptions = List.of("【A】确认执行", "【B】取消", "【C】修改请求");
             clarificationQuestion = buildStructuredQuestion(suggestedOptions, extraQuestions);
         } else if ("execute_with_guess".equals(action)) {
-            String assumedWindow = defaultValue(normalized, "time_window", longTermMemory, "近期");
-            defaultAssumption = "默认时间范围使用" + assumedWindow + "，如需调整可指定其他时间范围。";
-            suggestedOptions = recommendedOptions(normalized, "time_window", assumedWindow, "自定义区间");
+            Map<String, Object> slot = firstSlot(slots);
+            String assumedValue = stringValue(slot.get("default_value"));
+            defaultAssumption = assumedValue.isBlank()
+                    ? "将使用领域层的安全默认值继续执行。"
+                    : "默认使用" + assumedValue + "，如需可随时调整。";
+            suggestedOptions = optionsFromSlots(slots);
         } else {
-            String preferredDimension = defaultValue(normalized, "analysis_dimension", longTermMemory, "综合分析");
-            defaultAssumption = "分析维度默认使用：" + preferredDimension + "。";
-            suggestedOptions = recommendedOptions(normalized, "analysis_dimension", preferredDimension, "自定义维度");
+            defaultAssumption = "";
+            suggestedOptions = List.of();
         }
 
         Map<String, Object> decision = new LinkedHashMap<>();
@@ -143,6 +206,13 @@ public class ClarifyRequirementTool {
 
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("user_input", normalized);
+        data.put("phase", phase.value());
+        data.put("runtime_reason", runtimeReason);
+        data.put("blocking_decision", blockingDecision);
+        data.put("clarification_kind", clarificationKind);
+        data.put("materially_different_outcomes", materiallyDifferentOutcomes);
+        data.put("outcome_impacts", outcomeImpacts);
+        data.put("evidence_refs", evidenceRefs);
         data.put("missing_fields", missingFields);
         data.put("recognized_fields", recognizedFields);
         data.put("slots", slots);
@@ -164,27 +234,157 @@ public class ClarifyRequirementTool {
                         "action 必须是 ask/execute_with_guess/direct_execute/confirm_before_action",
                         "action=ask 时 clarification_question 非空",
                         "action=confirm_before_action 时必须等待用户确认",
+                        "ask 只能用于缺少业务信息、实质语义歧义或用户授权",
+                        "参数/schema/格式/编码/工具问题不得触发澄清",
                         "slots 必须描述关键槽位状态",
-                        "suggested_options 至少包含2项"));
+                        "action=ask/confirm_before_action 时 suggested_options 至少包含2项"));
     }
 
     /**
-     * 为缺失的 P0/P1 槽位组装用户可选项，候选项来自业务 provider。
+     * 在工具边界阻止模型把参数适配或执行故障伪装成用户需求缺失。
+     * Core 不解释具体领域语义，但要求模型明确声明业务原因和结果差异。
      */
-    private List<String> buildAskOptions(String userInput, boolean hasTarget, boolean hasTimeWindow) {
+    private String validateSemanticBoundary(
+            ClarificationPhase phase,
+            String clarificationKind,
+            boolean materiallyDifferentOutcomes,
+            boolean requiresUserChoice,
+            boolean confirmationRequired,
+            String blockingDecision,
+            List<String> observedCandidates,
+            List<String> outcomeImpacts,
+            List<Map<String, Object>> declaredSlots) {
+        boolean intendsToPause = confirmationRequired
+                || requiresUserChoice
+                || declaredSlots.stream().anyMatch(slot ->
+                        "P0".equalsIgnoreCase(stringValue(slot.get("priority"))));
+        if (!intendsToPause) {
+            return "";
+        }
+        if (!List.of("missing_business_information", "semantic_ambiguity", "authorization")
+                .contains(clarificationKind)) {
+            return "澄清原因必须是缺少业务信息、实质语义歧义或用户授权；参数抽取、格式/schema 适配和工具问题不得触发澄清";
+        }
+        if (!materiallyDifferentOutcomes) {
+            return "必须说明缺失信息或不同选择会实质改变任务结果；同义表达、格式、编码或可确定映射不得澄清";
+        }
+        if ("authorization".equals(clarificationKind)) {
+            return "";
+        }
+        if (blockingDecision.isBlank()) {
+            return "必须用业务语言说明需要用户决定的事项，不能只提供工具参数名";
+        }
+        if ("semantic_ambiguity".equals(clarificationKind) && outcomeImpacts.size() < 2) {
+            return "语义歧义必须说明至少两个候选会如何产生不同的业务结果；同义格式不能作为不同影响";
+        }
+        if (phase == ClarificationPhase.RUNTIME
+                && "semantic_ambiguity".equals(clarificationKind)
+                && observedCandidates.size() < 2) {
+            return "运行时语义歧义必须提供至少两个会产生实质不同业务结果的候选项";
+        }
+        return "";
+    }
+
+    /**
+     * 执行中澄清只允许处理“必须由用户决定”的阻塞；普通工具失败和证据不足应继续 ReAct。
+     */
+    private ClarificationDecision decideRuntimeClarification(
+            String reason,
+            String blockingDecision,
+            boolean requiresUserChoice,
+            boolean confirmationRequired) {
+        if (confirmationRequired) {
+            return new ClarificationDecision(
+                    "confirm_before_action",
+                    firstNonBlank(reason, "后续动作包含副作用，执行前必须获得用户确认。"),
+                    "P0",
+                    true);
+        }
+        if (requiresUserChoice && !blockingDecision.isBlank()) {
+            return new ClarificationDecision(
+                    "ask",
+                    firstNonBlank(reason, "工具观察产生了必须由用户选择的关键分支。"),
+                    "P0",
+                    true);
+        }
+        return new ClarificationDecision(
+                "direct_execute",
+                "当前运行时不确定性仍可通过安全工具或默认策略解决，不应中断用户。",
+                "P2",
+                false);
+    }
+
+    /** 规整模型声明的抽象槽位；领域候选值和默认值只能由扩展点提供。 */
+    private List<Map<String, Object>> normalizeDeclaredSlots(
+            String userInput, String memory, List<Map<String, Object>> declaredSlots) {
+        List<Map<String, Object>> normalizedSlots = new ArrayList<>();
+        for (Map<String, Object> source : declaredSlots) {
+            Map<String, Object> slot = new LinkedHashMap<>(source);
+            String name = stringValue(source.get("name")).trim();
+            if (name.isBlank()) {
+                continue;
+            }
+            slot.put("name", name);
+            slot.put("label", firstNonBlank(stringValue(source.get("label")), name));
+            slot.put("status", "missing");
+            slot.putIfAbsent("priority", "P0");
+            slot.putIfAbsent("value", null);
+            String defaultValue = firstNonBlank(
+                    stringValue(source.get("default_value")),
+                    businessProvider.defaultValue(userInput, name, memory));
+            slot.put("default_value", defaultValue);
+            List<String> candidates = stringList(source.get("candidates"));
+            if (candidates.isEmpty()) {
+                candidates = businessProvider.slotCandidates(userInput, name);
+            }
+            slot.put("candidates", candidates == null ? List.of() : candidates);
+            normalizedSlots.add(slot);
+        }
+        return normalizedSlots;
+    }
+
+    /** 运行时只保留当前阻塞决策，不推测任何领域槽位。 */
+    private List<Map<String, Object>> runtimeSlots(String blockingDecision, List<String> candidates) {
+        if (blockingDecision == null || blockingDecision.isBlank()) {
+            return List.of();
+        }
+        Map<String, Object> slot = new LinkedHashMap<>();
+        slot.put("name", "runtime_decision");
+        slot.put("label", blockingDecision);
+        slot.put("status", "missing");
+        slot.put("priority", "P0");
+        slot.put("value", null);
+        slot.put("default_value", "");
+        slot.put("candidates", candidates == null ? List.of() : candidates);
+        return List.of(slot);
+    }
+
+    private boolean hasPriority(List<Map<String, Object>> slots, String priority) {
+        return slots.stream().anyMatch(slot -> priority.equalsIgnoreCase(stringValue(slot.get("priority"))));
+    }
+
+    private Map<String, Object> firstSlot(List<Map<String, Object>> slots) {
+        return slots.isEmpty() ? Map.of() : slots.get(0);
+    }
+
+    private List<String> optionsFromSlots(List<Map<String, Object>> slots) {
+        List<String> candidates = new ArrayList<>();
+        for (Map<String, Object> slot : slots) {
+            candidates.addAll(stringList(slot.get("candidates")));
+        }
+        return formatRuntimeCandidates(candidates.isEmpty() ? List.of("请补充具体值", "取消本次任务") : candidates);
+    }
+
+    /** 把模型给出的运行时候选项统一转换为前端可读的 A/B/C 选项。 */
+    private List<String> formatRuntimeCandidates(List<String> candidates) {
         List<String> options = new ArrayList<>();
-        if (!hasTarget) {
-            appendCandidateOptions(options, "analysis_object", businessProvider.slotCandidates(userInput, "analysis_object"));
-        }
-        if (!hasTimeWindow) {
-            appendCandidateOptions(options, "time_window", businessProvider.slotCandidates(userInput, "time_window"));
-        }
-        if (options.isEmpty()) {
-            options.add("【A】保持默认设置（推荐）");
-            options.add("【B】自定义参数");
+        for (String candidate : candidates) {
+            if (candidate != null && !candidate.isBlank()) {
+                options.add(optionPrefix(options.size()) + candidate.trim());
+            }
         }
         if (options.size() == 1) {
-            options.add("【B】自定义补充");
+            options.add(optionPrefix(1) + "自定义选择");
         }
         return options;
     }
@@ -203,114 +403,16 @@ public class ClarifyRequirementTool {
                 + extraText;
     }
 
-    /**
-     * 粗判是否为分析类任务，用于决定缺时间范围时是否可默认执行。
-     */
-    private boolean isAnalysisIntent(String text) {
-        if (text == null || text.isBlank()) {
-            return false;
-        }
-        String normalized = text.toLowerCase();
-        return normalized.contains("分析")
-                || normalized.contains("报告")
-                || normalized.contains("风险")
-                || normalized.contains("是否值得")
-                || normalized.contains("关注");
-    }
-
-    /**
-     * 识别通用不可逆或外部副作用动作，命中后需要确认或补齐对象。
-     */
-    private boolean containsIrreversibleAction(String text) {
-        if (text == null || text.isBlank()) {
-            return false;
-        }
-        String normalized = text.toLowerCase();
-        return normalized.contains("删除")
-                || normalized.contains("清空")
-                || normalized.contains("发送")
-                || normalized.contains("转账")
-                || normalized.contains("关闭")
-                || normalized.contains("drop");
-    }
-
-    /**
-     * 默认值优先来自业务 provider，其次从记忆里猜测，最后使用通用兜底值。
-     */
-    private String defaultValue(String userInput, String slotName, String memory, String fallback) {
-        String businessDefault = businessProvider.defaultValue(userInput, slotName, memory);
-        if (businessDefault != null && !businessDefault.isBlank()) {
-            return businessDefault.trim();
-        }
-        return guessByMemory(memory, fallback);
-    }
-
-    /**
-     * 通用记忆兜底推断，只保留领域无关的时间范围偏好。
-     */
-    private String guessByMemory(String memory, String fallback) {
-        if (memory == null || memory.isBlank()) {
-            return fallback;
-        }
-        String normalized = memory.toLowerCase();
-        if (normalized.contains("近7天")) {
-            return "近7天";
-        }
-        if (normalized.contains("近30天")) {
-            return "近30天";
-        }
-        return fallback;
-    }
-
-    /**
-     * 构建结构化槽位列表，供前端渲染和后续恢复执行使用。
-     */
-    private List<Map<String, Object>> buildSlots(
-            String userInput, String memory, boolean hasTarget, boolean hasTimeWindow, boolean hasDimension) {
-        List<Map<String, Object>> slots = new ArrayList<>();
-        slots.add(buildSlot(userInput, memory, "analysis_object", "分析对象", hasTarget, "P0"));
-        slots.add(buildSlot(userInput, memory, "time_window", "时间范围", hasTimeWindow, "P1"));
-        slots.add(buildSlot(userInput, memory, "analysis_dimension", "分析维度", hasDimension, "P2"));
-        return slots;
-    }
-
-    /**
-     * 构建单个槽位状态，包含是否缺失、默认值和业务候选项。
-     */
-    private Map<String, Object> buildSlot(
-            String userInput, String memory, String name, String label, boolean present, String priority) {
-        Map<String, Object> slot = new LinkedHashMap<>();
-        slot.put("name", name);
-        slot.put("label", label);
-        slot.put("status", present ? "present" : "missing");
-        slot.put("priority", priority);
-        slot.put("value", present ? "已识别于用户输入" : null);
-        slot.put("default_value", defaultValue(userInput, name, memory, ""));
-        slot.put("candidates", businessProvider.slotCandidates(userInput, name));
-        return slot;
-    }
-
-    /**
-     * 将业务候选项格式化为【A】/【B】形式，便于用户短回复。
-     */
-    private List<String> formatCandidates(String slotName, List<String> candidates) {
-        List<String> options = new ArrayList<>();
-        appendCandidateOptions(options, slotName, candidates);
-        return options;
-    }
-
-    /**
-     * 追加候选项并保持编号全局递增，避免多个缺失槽位都出现【A】。
-     */
-    private void appendCandidateOptions(List<String> options, String slotName, List<String> candidates) {
-        List<String> values = candidates == null ? List.of() : candidates;
-        for (int i = 0; i < values.size(); i++) {
-            String prefix = optionPrefix(options.size());
-            options.add(prefix + values.get(i));
-        }
-        if (values.isEmpty()) {
-            options.add(optionPrefix(options.size()) + "自定义" + slotLabel(slotName));
-        }
+    /** 为运行时阻塞生成聚焦问题，最终自然语言仍由下一轮模型结合完整上下文输出。 */
+    private String buildRuntimeQuestion(String blockingDecision, List<String> options) {
+        String decision = blockingDecision == null || blockingDecision.isBlank()
+                ? "请选择后续执行口径"
+                : blockingDecision;
+        return "执行过程中发现一个会影响后续结论的关键分支："
+                + decision
+                + "。可选项："
+                + String.join("；", options)
+                + "。";
     }
 
     /**
@@ -322,32 +424,6 @@ public class ClarifyRequirementTool {
                 case 1 -> "【B】";
                 case 2 -> "【C】";
                 default -> "【" + (index + 1) + "】";
-        };
-    }
-
-    /**
-     * 为 execute_with_guess/direct_execute 生成“默认推荐 + 可替换项”的提示选项。
-     */
-    private List<String> recommendedOptions(String userInput, String slotName, String recommended, String fallback) {
-        List<String> candidates = new ArrayList<>(businessProvider.slotCandidates(userInput, slotName));
-        if (recommended != null && !recommended.isBlank() && !candidates.contains(recommended)) {
-            candidates.add(0, recommended);
-        }
-        if (!candidates.contains(fallback)) {
-            candidates.add(fallback);
-        }
-        return formatCandidates(slotName, candidates);
-    }
-
-    /**
-     * 槽位英文名到中文展示名的兜底映射。
-     */
-    private String slotLabel(String slotName) {
-        return switch (slotName) {
-            case "analysis_object" -> "分析对象";
-            case "time_window" -> "时间范围";
-            case "analysis_dimension" -> "分析维度";
-            default -> "参数";
         };
     }
 
@@ -387,6 +463,45 @@ public class ClarifyRequirementTool {
         return value == null ? "" : String.valueOf(value);
     }
 
+    private boolean booleanValue(Object value, boolean fallback) {
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value instanceof String text && !text.isBlank()) {
+            return Boolean.parseBoolean(text.trim());
+        }
+        return fallback;
+    }
+
+    private List<String> stringList(Object value) {
+        if (!(value instanceof List<?> list)) {
+            return List.of();
+        }
+        List<String> values = new ArrayList<>();
+        for (Object item : list) {
+            if (item != null && !String.valueOf(item).isBlank()) {
+                values.add(String.valueOf(item).trim());
+            }
+        }
+        return values;
+    }
+
+    private List<Map<String, Object>> mapList(Object value) {
+        if (!(value instanceof List<?> list)) {
+            return List.of();
+        }
+        List<Map<String, Object>> values = new ArrayList<>();
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> source)) {
+                continue;
+            }
+            Map<String, Object> mapped = new LinkedHashMap<>();
+            source.forEach((key, itemValue) -> mapped.put(String.valueOf(key), itemValue));
+            values.add(mapped);
+        }
+        return values;
+    }
+
     private String firstNonBlank(String first, String second) {
         if (first != null && !first.isBlank()) {
             return first.trim();
@@ -394,61 +509,12 @@ public class ClarifyRequirementTool {
         return second == null ? "" : second.trim();
     }
 
-    private boolean containsTarget(String text) {
-        if (text == null || text.isBlank()) {
-            return false;
+    /** 会话适配层会拼接历史消息；槽位判断只读取“本轮用户”片段，避免历史示例污染。 */
+    private String currentUserTurn(String input) {
+        if (input == null || input.isBlank()) {
+            return "";
         }
-        if (Pattern.compile("\\b\\d{6}\\b").matcher(text).find()) {
-            return true;
-        }
-        if (Pattern.compile("\\b[A-Z]{1,5}\\b").matcher(text.toUpperCase()).find()) {
-            return true;
-        }
-        String normalized = text.toLowerCase();
-        return normalized.contains("对象")
-                || normalized.contains("主题")
-                || normalized.contains("标的")
-                || normalized.contains("内容")
-                || normalized.contains("项目");
-    }
-
-    private boolean containsTimeWindow(String text) {
-        if (text == null || text.isBlank()) {
-            return false;
-        }
-        String normalized = text.toLowerCase();
-        return normalized.contains("今天")
-                || normalized.contains("近期")
-                || normalized.contains("最近")
-                || normalized.contains("近一周")
-                || normalized.contains("近一月")
-                || normalized.contains("本周")
-                || normalized.contains("本月")
-                || normalized.contains("today")
-                || normalized.contains("week")
-                || normalized.contains("month");
-    }
-
-    private boolean containsAnalysisDimension(String text) {
-        if (text == null || text.isBlank()) {
-            return false;
-        }
-        String normalized = text.toLowerCase();
-        return normalized.contains("维度")
-                || normalized.contains("重点")
-                || normalized.contains("角度")
-                || normalized.contains("指标")
-                || normalized.contains("关注点")
-                || normalized.contains("输出")
-                || normalized.contains("值得关注")
-                || normalized.contains("是否关注")
-                || normalized.contains("值不值得")
-                || normalized.contains("能买吗")
-                || normalized.contains("可不可以买")
-                || normalized.contains("可不可以")
-                || normalized.contains("风险大吗")
-                || normalized.contains("要不要")
-                || normalized.contains("是否买入")
-                || normalized.contains("是否持有");
+        int marker = input.lastIndexOf("本轮用户:");
+        return marker >= 0 ? input.substring(marker + "本轮用户:".length()).trim() : input.trim();
     }
 }

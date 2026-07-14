@@ -106,7 +106,7 @@ public class FinalAnswerSynthesizer {
         output.put("core_conclusions", List.of("关键信息缺失，已暂停后续执行，等待你补充后继续。"));
         List<String> missingFields = json.asStringList(data.get("missing_fields"));
         output.put("key_evidence", missingFields.isEmpty()
-                ? List.of("缺失字段未识别，请补充分析对象、时间范围和约束。")
+                ? List.of("缺失字段未识别，请补充完成任务所需的关键信息。")
                 : List.of("缺失信息：" + String.join("、", missingFields)));
         output.put("risk_points", List.of("在缺少关键信息时继续执行会产生错误结论风险。"));
         output.put("next_actions", List.of("请先补充缺失信息后再继续。"));
@@ -129,6 +129,8 @@ public class FinalAnswerSynthesizer {
                     + "明确证据、局限和后续建议，不要继续调用工具。";
         }
         int finalSynthesisRound = properties.resolveMaxRounds(executionMode) + 1;
+        // 最终合成是硬状态：reasoning 会看到空工具列表，不再依赖提示词劝模型停止调用工具。
+        state.finalSynthesisStage = true;
         state.lastResponse = reasoningCallback.reason(finalSynthesisRound);
         List<AgentToolCall> toolCalls = toolCallExtractor.extract(state.lastResponse);
         if (!toolCalls.isEmpty()) {
@@ -298,7 +300,7 @@ public class FinalAnswerSynthesizer {
         if (state.blockedReason != null && !state.blockedReason.isBlank()) {
             risks.add(state.blockedReason);
         }
-        nextActions.add("选项1：补充关键信息（如股票代码、时间范围、分析维度）后重试。");
+        nextActions.add("选项1：补充当前任务缺少的关键信息后重试。");
         nextActions.add("选项2：在现有证据下按保守策略输出初步结论，并明确不确定性。");
 
         Map<String, Object> fallback = new LinkedHashMap<>();

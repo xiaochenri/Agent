@@ -79,4 +79,8 @@ public final class RuntimeState {
     public boolean inClarificationStage = false;
     // 澄清工具返回的结构化上下文，供模型生成澄清回复时参考。
     public Map<String, Object> clarificationData = new LinkedHashMap<>();
+    // 计划步骤已经全部完成，下一阶段只能做最终答案合成。
+    public boolean planExecutionCompleted = false;
+    // 最终合成阶段不再向模型暴露工具，形成执行层硬约束。
+    public boolean finalSynthesisStage = false;
 }

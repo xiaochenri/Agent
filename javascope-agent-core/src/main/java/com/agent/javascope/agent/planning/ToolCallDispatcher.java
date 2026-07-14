@@ -108,6 +108,14 @@ public class ToolCallDispatcher {
             recordRevisionInputOutput(toolName, toolInput, resultJson, state);
             if (!toolResult.isSuccess()) {
                 state.riskFlags.add("tool_call_failed_" + toolName);
+                List<String> errors = json.asStringList(resultJson.get("validation_errors"));
+                if (!errors.isEmpty()) {
+                    state.validationFeedback = String.join("; ", errors);
+                }
+                if ("create_plan".equals(toolName)
+                        && state.validationFeedback.contains("必须先调用 clarify_requirement")) {
+                    state.validationFeedback += "。下一轮不要再次猜测关键对象，应调用 clarify_requirement。";
+                }
                 continue;
             }
             BusinessDecisionTracker.capture(toolName, resultJson, state);
@@ -125,6 +133,8 @@ public class ToolCallDispatcher {
                 if (!planExecutor.execute(input, round, state)) {
                     return ToolDispatchStatus.CONTINUE_REASONING;
                 }
+                // 计划步骤全部完成后进入最终合成，不再把剩余普通轮次交给模型继续试探工具。
+                state.planExecutionCompleted = true;
             }
         }
         return ToolDispatchStatus.CONTINUE_REASONING;
@@ -173,6 +183,10 @@ public class ToolCallDispatcher {
      */
     private Map<String, Object> enrichToolInput(String toolName, Map<String, Object> originalInput, RuntimeState state) {
         Map<String, Object> enriched = new LinkedHashMap<>(originalInput);
+        if ("clarify_requirement".equals(toolName)) {
+            // 模型应显式给出 phase；缺省时根据是否已有业务观察安全推断，兼容旧 Prompt。
+            enriched.putIfAbsent("phase", hasBusinessObservation(state) ? "runtime" : "initial");
+        }
         if ("create_plan".equals(toolName) && !state.validationFeedback.isBlank()) {
             enriched.putIfAbsent("feedback", state.validationFeedback);
         }
@@ -200,6 +214,17 @@ public class ToolCallDispatcher {
             }
         }
         return enriched;
+    }
+
+    /** 已执行过业务工具说明澄清来自执行过程，而不是第一次行动判断。 */
+    private boolean hasBusinessObservation(RuntimeState state) {
+        for (AgentExecutionLogEntry entry : state.executionLog) {
+            AgentToolDefinition definition = toolExecutor.getToolDefinition(entry.getToolName());
+            if (definition != null && definition.getToolType() == ToolType.BUSINESS) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -243,15 +268,20 @@ public class ToolCallDispatcher {
      * 根据最新计划生成 PlanStepState，并标记可复用的已完成步骤。
      */
     private void rebuildPlanSteps(RuntimeState state, String sourceTool) {
+        state.planExecutionCompleted = false;
         state.planVersion++;
         state.currentPlanId = "plan_v" + state.planVersion;
         state.planSteps.clear();
+        // 先统一分配全部 step_id，再建立依赖边，避免自定义 step_id 与运行时生成 ID 混用。
         for (int i = 0; i < state.latestPlan.size(); i++) {
             PlanStepDefinition raw = state.latestPlan.get(i);
-            String stepId = json.normalize(raw.getStepId(), state.currentPlanId + "_step_" + (i + 1));
-            raw.setStepId(stepId);
-            String prevId = i == 0 ? null : state.currentPlanId + "_step_" + i;
-            String nextId = i == state.latestPlan.size() - 1 ? null : state.currentPlanId + "_step_" + (i + 2);
+            raw.setStepId(json.normalize(raw.getStepId(), state.currentPlanId + "_step_" + (i + 1)));
+        }
+        for (int i = 0; i < state.latestPlan.size(); i++) {
+            PlanStepDefinition raw = state.latestPlan.get(i);
+            String stepId = raw.getStepId();
+            String prevId = i == 0 ? null : state.latestPlan.get(i - 1).getStepId();
+            String nextId = i == state.latestPlan.size() - 1 ? null : state.latestPlan.get(i + 1).getStepId();
             state.planSteps.add(new PlanStepState(
                     stepId,
                     json.normalize(raw.getName(), "step_" + (i + 1)),
@@ -259,7 +289,9 @@ public class ToolCallDispatcher {
                     json.normalize(raw.getTool(), ""),
                     raw.getInput(),
                     json.normalize(raw.getExpectedOutcome(), ""),
+                    raw.getRequiredOutputs(),
                     raw.isDependsOnPrevious(),
+                    raw.getDependsOnStepIds(),
                     prevId,
                     nextId));
         }
@@ -371,6 +403,8 @@ public class ToolCallDispatcher {
                     step.getName(), step.getDescription(), step.getToolName(),
                     new LinkedHashMap<>(step.getInput()), step.getExpectedOutcome(), step.isDependsOnPrevious()));
             failure.getStep().setStepId(step.getStepId());
+            failure.getStep().setRequiredOutputs(step.getRequiredOutputs());
+            failure.getStep().setDependsOnStepIds(step.getDependsOnStepIds());
             failure.setReason(json.normalize(
                     json.asStringList(step.getActualOutput().get("validation_errors")).stream().findFirst().orElse("步骤执行失败"),
                     "步骤执行失败"));
@@ -419,6 +453,8 @@ public class ToolCallDispatcher {
                 step.getExpectedOutcome(),
                 step.isDependsOnPrevious());
         copy.setStepId(step.getStepId());
+        copy.setRequiredOutputs(new ArrayList<>(step.getRequiredOutputs()));
+        copy.setDependsOnStepIds(new ArrayList<>(step.getDependsOnStepIds()));
         return copy;
     }
 

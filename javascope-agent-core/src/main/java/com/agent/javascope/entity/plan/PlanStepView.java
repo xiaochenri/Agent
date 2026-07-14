@@ -1,7 +1,9 @@
 package com.agent.javascope.entity.plan;
 
 import com.agent.javascope.plan.PlanStepStatus;
+import com.agent.javascope.contract.plan.PlanOutputRequirement;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -21,11 +23,17 @@ public class PlanStepView {
     /** 步骤预期产出。 */
     @JsonProperty("expected_outcome")
     private String expectedOutcome = "";
+    /** 机器可校验的必需输出。 */
+    @JsonProperty("required_outputs")
+    private List<PlanOutputRequirement> requiredOutputs = List.of();
     /** 步骤执行状态。 */
     private PlanStepStatus status = PlanStepStatus.PENDING;
     /** 是否必须依赖上一步成功完成。 */
     @JsonProperty("depends_on_previous")
     private boolean dependsOnPrevious;
+    /** 显式前置依赖，可同时依赖多个步骤。 */
+    @JsonProperty("depends_on_step_ids")
+    private List<String> dependsOnStepIds = List.of();
     /** 前置步骤 ID，没有前置步骤时为空字符串。 */
     @JsonProperty("previous_step_id")
     private String previousStepId = "";
@@ -45,8 +53,10 @@ public class PlanStepView {
         this.tool = step.getToolName();
         this.input = step.getInput();
         this.expectedOutcome = step.getExpectedOutcome();
+        this.requiredOutputs = step.getRequiredOutputs();
         this.status = step.getStatus();
         this.dependsOnPrevious = step.isDependsOnPrevious();
+        this.dependsOnStepIds = step.getDependsOnStepIds();
         this.previousStepId = step.getPreviousStepId() == null ? "" : step.getPreviousStepId();
         this.nextStepId = step.getNextStepId() == null ? "" : step.getNextStepId();
         this.actualOutput = step.getActualOutput();
@@ -78,6 +88,14 @@ public class PlanStepView {
 
     public PlanStepStatus getStatus() {
         return status;
+    }
+
+    public List<PlanOutputRequirement> getRequiredOutputs() {
+        return requiredOutputs;
+    }
+
+    public List<String> getDependsOnStepIds() {
+        return dependsOnStepIds;
     }
 
     public boolean isDependsOnPrevious() {

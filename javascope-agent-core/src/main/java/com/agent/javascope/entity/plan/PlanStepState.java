@@ -1,6 +1,8 @@
 package com.agent.javascope.entity.plan;
 
 import com.agent.javascope.plan.PlanStepStatus;
+import com.agent.javascope.contract.plan.PlanOutputRequirement;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -12,7 +14,9 @@ public class PlanStepState {
     private final String toolName;
     private final Map<String, Object> input;
     private final String expectedOutcome;
+    private final List<PlanOutputRequirement> requiredOutputs;
     private final boolean dependsOnPrevious;
+    private final List<String> dependsOnStepIds;
     private final String previousStepId;
     private final String nextStepId;
     private PlanStepStatus status = PlanStepStatus.PENDING;
@@ -25,7 +29,9 @@ public class PlanStepState {
             String toolName,
             Map<String, Object> input,
             String expectedOutcome,
+            List<PlanOutputRequirement> requiredOutputs,
             boolean dependsOnPrevious,
+            List<String> dependsOnStepIds,
             String previousStepId,
             String nextStepId) {
         this.stepId = stepId;
@@ -34,7 +40,9 @@ public class PlanStepState {
         this.toolName = toolName;
         this.input = input;
         this.expectedOutcome = expectedOutcome;
+        this.requiredOutputs = requiredOutputs == null ? List.of() : List.copyOf(requiredOutputs);
         this.dependsOnPrevious = dependsOnPrevious;
+        this.dependsOnStepIds = dependsOnStepIds == null ? List.of() : List.copyOf(dependsOnStepIds);
         this.previousStepId = previousStepId;
         this.nextStepId = nextStepId;
     }
@@ -65,6 +73,14 @@ public class PlanStepState {
 
     public boolean isDependsOnPrevious() {
         return dependsOnPrevious;
+    }
+
+    public List<PlanOutputRequirement> getRequiredOutputs() {
+        return requiredOutputs;
+    }
+
+    public List<String> getDependsOnStepIds() {
+        return dependsOnStepIds;
     }
 
     public String getPreviousStepId() {

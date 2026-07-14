@@ -14,8 +14,8 @@ public final class PlanInputResolver {
     private PlanInputResolver() {}
 
     /**
-     * 支持 {@code {"$ref":"steps.1.data.price"}}、{@code previous.data.price} 和
-     * {@code tools.market_quote.data.price} 三类引用；步骤序号从 1 开始。
+     * 支持 {@code {"$ref":"steps.1.data.result_value"}}、{@code previous.data.result_value} 和
+     * {@code tools.source_tool.data.result_value} 三类引用；步骤序号从 1 开始。
      */
     public static Map<String, Object> resolve(Map<String, Object> rawInput, int stepIndex, List<PlanStepState> steps) {
         Object resolved = resolveValue(rawInput == null ? Map.of() : rawInput, stepIndex, steps);

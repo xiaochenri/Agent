@@ -116,19 +116,26 @@ public class StockAnalysisTools extends StockToolSupport {
         String macdState = nestedText(technical, "macd", "state");
 
         List<String> conclusions = new ArrayList<>();
-        conclusions.add(displayName + "截至" + asOf + "的行情显示，最新价"
-                + value(price) + "，当日涨跌幅" + percent(dailyChange) + "。");
-        conclusions.add("技术面呈" + directionZh(trend) + "：均线状态与MACD"
-                + (macdState.isBlank() ? "" : "（" + macdState + "）") + "共同支持当前趋势，动量为" + directionZh(momentum) + "。");
-        boolean overheated = (rsi != null && rsi >= 70) || (percentB != null && percentB > 1);
-        conclusions.add(overheated
-                ? "短线处于偏热区，当前更适合等待回撤或量能确认，不宜只因趋势偏强而追高。"
-                : "技术面尚未出现明显过热信号，可结合后续量能和价格结构继续观察。");
-        conclusions.add("综合判断：当前具备技术面观察价值；长期投资价值仍应结合盈利、现金流与估值等基本面指标作进一步确认。");
+        if (hasContent(quote)) {
+            conclusions.add(displayName + "截至" + asOf + "的行情显示，最新价"
+                    + value(price) + "，当日涨跌幅" + percent(dailyChange) + "。");
+        }
+        boolean hasTechnical = hasContent(technical);
+        boolean overheated = hasTechnical && ((rsi != null && rsi >= 70) || (percentB != null && percentB > 1));
+        if (hasTechnical) {
+            conclusions.add("技术面呈" + directionZh(trend) + "：当前结构信号为"
+                    + (macdState.isBlank() ? directionZh(momentum) : macdState) + "。");
+            conclusions.add(overheated
+                    ? "短线处于偏热区，需要等待回撤或量能确认。"
+                    : "现有技术指标未显示明确过热信号，可继续观察量价结构。");
+        }
+        if (conclusions.isEmpty()) {
+            conclusions.add("当前没有足够的行情或技术数据，不能生成对应维度的判断。");
+        }
 
         List<String> evidence = new ArrayList<>();
-        evidence.add("最新价" + value(price) + "，当日涨跌幅" + percent(dailyChange) + "。");
-        evidence.add("EMA趋势=" + trend + "，MACD=" + macdState + "，RSI=" + value(rsi) + "。");
+        if (hasContent(quote)) evidence.add("最新价" + value(price) + "，当日涨跌幅" + percent(dailyChange) + "。");
+        if (hasTechnical) evidence.add("EMA趋势=" + trend + "，MACD=" + macdState + "，RSI=" + value(rsi) + "。");
         if (percentB != null) evidence.add("布林带%B=" + value(percentB) + (percentB > 1 ? "，价格位于上轨之外。" : "。"));
         if (volumeRatio != null) evidence.add("量比=" + value(volumeRatio) + (volumeRatio < 1 ? "，当前量能低于均量。" : "。"));
 

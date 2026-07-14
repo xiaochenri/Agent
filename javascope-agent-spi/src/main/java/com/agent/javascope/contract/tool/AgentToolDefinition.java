@@ -62,6 +62,9 @@ public class AgentToolDefinition {
     /** JSON Schema 格式的工具返回定义。 */
     @JsonProperty("output_schema")
     private Map<String, Object> outputSchema = new LinkedHashMap<>();
+    /** 是否由业务工具显式声明输出 Schema；用于区分严格字段契约和通用 Envelope 兜底。 */
+    @JsonProperty("strict_output_contract")
+    private boolean strictOutputContract;
     /** 工具调用示例，供 prompt、文档或 UI 使用。 */
     private List<Map<String, Object>> examples = new ArrayList<>();
 
@@ -207,6 +210,14 @@ public class AgentToolDefinition {
 
     public void setOutputSchema(Map<String, Object> outputSchema) {
         this.outputSchema = outputSchema == null ? new LinkedHashMap<>() : outputSchema;
+    }
+
+    public boolean isStrictOutputContract() {
+        return strictOutputContract;
+    }
+
+    public void setStrictOutputContract(boolean strictOutputContract) {
+        this.strictOutputContract = strictOutputContract;
     }
 
     public List<Map<String, Object>> getExamples() {

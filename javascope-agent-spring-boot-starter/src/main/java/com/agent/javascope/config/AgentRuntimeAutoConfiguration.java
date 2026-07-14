@@ -20,6 +20,10 @@ import com.agent.javascope.tool.invocation.ToolInvoker;
 import com.agent.javascope.tool.middleware.ToolMiddleware;
 import com.agent.javascope.tool.registry.ToolRegistry;
 import com.agent.javascope.tool.runtime.ClarificationBusinessProvider;
+import com.agent.javascope.tool.runtime.PlanSafetyValidator;
+import com.agent.javascope.tool.contract.JsonSchemaToolContractValidator;
+import com.agent.javascope.tool.contract.ToolContractValidator;
+import com.agent.javascope.tool.contract.ToolSemanticValidator;
 import com.agent.javascope.tools.clarification.ClarifyRequirementTool;
 import com.agent.javascope.tools.planning.CreatePlanTool;
 import com.agent.javascope.tools.planning.RevisePlanTool;
@@ -140,18 +144,28 @@ public class AgentRuntimeAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    public ToolContractValidator toolContractValidator() {
+        return new JsonSchemaToolContractValidator();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     public AgentToolExecutor agentToolExecutor(
             ToolRegistry registry,
             ToolAuthorizationPolicy authorizationPolicy,
             ObjectProvider<ToolMiddleware> middlewares,
+            ObjectProvider<ToolSemanticValidator> semanticValidators,
             ToolInvoker invoker,
-            AgentJsonCodecUtil json) {
+            AgentJsonCodecUtil json,
+            ToolContractValidator contractValidator) {
         return new DefaultAgentToolExecutor(
                 registry,
                 authorizationPolicy,
                 middlewares.orderedStream().toList(),
                 invoker,
-                json);
+                json,
+                contractValidator,
+                semanticValidators.orderedStream().toList());
     }
 
     @Bean
@@ -169,13 +183,15 @@ public class AgentRuntimeAutoConfiguration {
             AgentToolExecutor agentToolExecutor,
             AgentChatModelClient agentChatModelClient,
             AgentJsonCodecUtil json,
-            AgentRuntimeProperties properties) {
+            AgentRuntimeProperties properties,
+            ObjectProvider<PlanSafetyValidator> planSafetyValidator) {
         return new CreatePlanTool(
                 promptProvider,
                 agentToolExecutor,
                 agentChatModelClient,
                 json,
-                properties.getPlanMaxRetry());
+                properties.getPlanMaxRetry(),
+                planSafetyValidator.getIfAvailable(() -> new PlanSafetyValidator() {}));
     }
 
     @Bean

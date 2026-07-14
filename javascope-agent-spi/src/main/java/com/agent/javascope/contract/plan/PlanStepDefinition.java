@@ -1,6 +1,8 @@
 package com.agent.javascope.contract.plan;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -20,9 +22,15 @@ public class PlanStepDefinition {
     /** 预期产出，用于步骤执行后的语义校验。 */
     @JsonProperty("expected_outcome")
     private String expectedOutcome = "";
+    /** 机器可校验的必需输出，避免仅凭工具 status=success 把步骤判定为完成。 */
+    @JsonProperty("required_outputs")
+    private List<PlanOutputRequirement> requiredOutputs = new ArrayList<>();
     /** 是否必须依赖上一步成功完成。 */
     @JsonProperty("depends_on_previous")
     private boolean dependsOnPrevious;
+    /** 显式依赖的步骤 ID；用于表达一个步骤同时依赖多个前序步骤。 */
+    @JsonProperty("depends_on_step_ids")
+    private List<String> dependsOnStepIds = new ArrayList<>();
 
     public PlanStepDefinition() {}
 
@@ -100,5 +108,21 @@ public class PlanStepDefinition {
 
     public void setDependsOnPrevious(boolean dependsOnPrevious) {
         this.dependsOnPrevious = dependsOnPrevious;
+    }
+
+    public List<PlanOutputRequirement> getRequiredOutputs() {
+        return requiredOutputs == null ? new ArrayList<>() : requiredOutputs;
+    }
+
+    public void setRequiredOutputs(List<PlanOutputRequirement> requiredOutputs) {
+        this.requiredOutputs = requiredOutputs == null ? new ArrayList<>() : requiredOutputs;
+    }
+
+    public List<String> getDependsOnStepIds() {
+        return dependsOnStepIds == null ? new ArrayList<>() : dependsOnStepIds;
+    }
+
+    public void setDependsOnStepIds(List<String> dependsOnStepIds) {
+        this.dependsOnStepIds = dependsOnStepIds == null ? new ArrayList<>() : dependsOnStepIds;
     }
 }

@@ -8,6 +8,8 @@ import com.agent.javascope.model.ModelResult;
 import com.agent.javascope.contract.tool.AgentToolDefinition;
 import com.agent.javascope.contract.plan.FailedStepHistoryItem;
 import com.agent.javascope.contract.plan.PlanStepDefinition;
+import com.agent.javascope.tool.contract.ToolOutputContractInspector;
+import com.agent.javascope.tool.contract.PlanToolReferenceInspector;
 import com.agent.javascope.entity.plan.PlanToolData;
 import com.agent.javascope.entity.plan.PlanStepFailure;
 import com.agent.javascope.entity.plan.PlanStepReplacement;
@@ -113,10 +115,15 @@ public class RevisePlanTool {
                     failedStepHistory,
                     i,
                     lastError,
-                    json.toJson(toolExecutor.listToolSchemas()));
+                    json.toJson(planEligibleToolSchemas()));
             PlanToolData candidate = json.convert(modelContent(agentChatModelClient.chat(new ModelRequest(prompt))), PlanToolData.class);
             List<PlanStepReplacement> replacements = candidate.getReplacements();
-            List<String> errors = validateReplacements(replacements, failedSteps, completedStepFingerprints, failedStepFingerprints);
+            Set<String> existingStepIds = currentPlan.stream()
+                    .map(PlanStepDefinition::getStepId)
+                    .filter(id -> id != null && !id.isBlank())
+                    .collect(java.util.stream.Collectors.toSet());
+            List<String> errors = validateReplacements(
+                    replacements, failedSteps, completedStepFingerprints, failedStepFingerprints, existingStepIds);
             latest = candidate;
             if (errors.isEmpty()) {
                 return json.toJson(ToolResultPayload.success("revise_plan", latest));
@@ -130,7 +137,8 @@ public class RevisePlanTool {
             List<PlanStepReplacement> replacements,
             List<PlanStepFailure> failedSteps,
             List<String> completedStepFingerprints,
-            List<String> failedStepFingerprints) {
+            List<String> failedStepFingerprints,
+            Set<String> existingStepIds) {
         List<String> errors = new ArrayList<>();
         Set<String> expectedTargets = new HashSet<>();
         for (PlanStepFailure failed : failedSteps) {
@@ -144,7 +152,7 @@ public class RevisePlanTool {
                 continue;
             }
             List<PlanStepDefinition> steps = replacement.getSteps();
-            errors.addAll(validatePlanStructure(steps));
+            errors.addAll(validatePlanStructure(steps, existingStepIds));
             errors.addAll(validateNoPlanningTools(steps));
             errors.addAll(validateNoCompletedStepReuse(steps, completedStepFingerprints));
             errors.addAll(validateNoFailedStepReuse(steps, failedStepFingerprints));
@@ -153,10 +161,15 @@ public class RevisePlanTool {
         return errors;
     }
 
-    private List<String> validatePlanStructure(List<PlanStepDefinition> plan) {
+    private List<String> validatePlanStructure(List<PlanStepDefinition> plan, Set<String> existingStepIds) {
         List<String> errors = new ArrayList<>();
+        Set<String> knownStepIds = new HashSet<>();
         for (int i = 0; i < plan.size(); i++) {
             PlanStepDefinition step = plan.get(i);
+            String stepId = normalize(step.getStepId(), "");
+            if (stepId.isEmpty() || !knownStepIds.add(stepId)) {
+                errors.add("plan[" + i + "].step_id 不能为空且必须唯一");
+            }
             if (normalize(step.getName(), "").isEmpty()) {
                 errors.add("plan[" + i + "].name 不能为空");
             }
@@ -171,6 +184,9 @@ public class RevisePlanTool {
                     errors.add("plan[" + i + "].tool 未注册: " + step.getTool());
                 } else if (!toolDefinition.isAllowedInPlanStep()) {
                     errors.add("plan[" + i + "].tool 不允许作为计划步骤: " + step.getTool());
+                } else {
+                    errors.addAll(ToolOutputContractInspector.validate(
+                            toolDefinition, step.getRequiredOutputs(), "plan[" + i + "]"));
                 }
             }
             if (step.getInput() == null) {
@@ -179,10 +195,20 @@ public class RevisePlanTool {
             if (normalize(step.getExpectedOutcome(), "").isEmpty()) {
                 errors.add("plan[" + i + "].expected_outcome 不能为空");
             }
+            if (step.getRequiredOutputs().isEmpty()) {
+                errors.add("plan[" + i + "].required_outputs 不能为空");
+            }
             if (i == 0 && step.isDependsOnPrevious()) {
                 errors.add("plan[0].depends_on_previous 必须为 false");
             }
+            for (String dependencyId : step.getDependsOnStepIds()) {
+                if ((!knownStepIds.contains(dependencyId) && !existingStepIds.contains(dependencyId))
+                        || dependencyId.equals(stepId)) {
+                    errors.add("plan[" + i + "].depends_on_step_ids 只能引用当前补丁前序步骤或原计划 step_id: " + dependencyId);
+                }
+            }
         }
+        errors.addAll(PlanToolReferenceInspector.validate(plan, toolExecutor));
         return errors;
     }
 
@@ -199,14 +225,25 @@ public class RevisePlanTool {
 
     private List<String> validateNoPlanningTools(List<PlanStepDefinition> plan) {
         List<String> errors = new ArrayList<>();
-        Set<String> banned = Set.of("create_plan", "revise_plan");
+        Set<String> banned = Set.of("clarify_requirement", "create_plan", "revise_plan");
         for (int i = 0; i < plan.size(); i++) {
             String tool = normalize(plan.get(i).getTool(), "");
             if (banned.contains(tool)) {
-                errors.add("plan[" + i + "].tool 不能是 create_plan/revise_plan");
+                errors.add("plan[" + i + "].tool 不能是 clarify_requirement/create_plan/revise_plan");
             }
         }
         return errors;
+    }
+
+    /** 重规划与首次规划使用相同工具边界，只暴露允许进入计划步骤的工具。 */
+    private List<Map<String, Object>> planEligibleToolSchemas() {
+        return toolExecutor.listToolSchemas().stream()
+                .filter(schema -> {
+                    AgentToolDefinition definition =
+                            toolExecutor.getToolDefinition(String.valueOf(schema.get("name")));
+                    return definition != null && definition.isAllowedInPlanStep();
+                })
+                .toList();
     }
 
     private List<String> validateNoCompletedStepReuse(

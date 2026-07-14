@@ -43,14 +43,20 @@ public class PlanReActExecutionStrategy extends AbstractToolLoopExecutionStrateg
                 && "planned".equals(routeDecision.getExecutionMode());
     }
 
-    /** planned 首轮只允许创建计划；计划建立后才暴露业务工具和 revise_plan。 */
+    /**
+     * planned 首轮由同一次模型思考在“澄清”与“创建计划”之间二选一；
+     * 计划建立后才暴露业务工具和 revise_plan。
+     */
     @Override
     protected List<Map<String, Object>> visibleToolSchemas(RuntimeState state) {
         if (!state.latestPlan.isEmpty()) {
             return toolSchemas;
         }
         return toolSchemas.stream()
-                .filter(schema -> "create_plan".equals(String.valueOf(schema.get("name"))))
+                .filter(schema -> {
+                    String name = String.valueOf(schema.get("name"));
+                    return "create_plan".equals(name) || "clarify_requirement".equals(name);
+                })
                 .toList();
     }
 }

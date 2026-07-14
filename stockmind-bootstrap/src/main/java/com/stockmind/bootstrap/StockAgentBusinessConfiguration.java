@@ -2,10 +2,13 @@ package com.stockmind.bootstrap;
 
 import com.agent.javascope.prompt.AgentBusinessPromptCustomizer;
 import com.agent.javascope.tool.runtime.ClarificationBusinessProvider;
+import com.agent.javascope.tool.runtime.PlanSafetyValidator;
+import com.agent.javascope.contract.plan.PlanStepDefinition;
 import com.stockmind.application.analysis.TechnicalAnalysisService;
 import com.stockmind.application.market.MarketDataProvider;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.context.annotation.Bean;
@@ -43,13 +46,12 @@ public class StockAgentBusinessConfiguration {
                         - 你是一个用于股票分析的助手，聚焦个股/板块的事实分析与风险提示
 
                         业务规则补充（股票场景）：
-                        - 工具使用场景必须匹配步骤目标，不允许“为调用而调用”
                         - 股票任务中，标的必须明确；用户未给时间范围时不填写具体历史日期，由股票工具统一解析为截至当前日期的近一个月窗口
-                        - 对非任务型请求（如“你是谁”“你能帮我做什么”），必须直接输出面向用户的自然回答，不得输出“非任务型请求/无需进入工具链”等内部流程描述
-                        - 当用户问“你能帮我做什么”时，core_conclusions 至少包含：你能提供的能力列表 + 1-2条用户可直接输入的示例
-                        - 当用户问“你是谁”时，core_conclusions 应先说明你的角色，再给出可执行帮助范围
+                        - 财报期间与行情时间窗是不同口径；自然语言已明确财报期间时由下游转换为 report_period/report_document，不得因参数格式澄清
+                        - 只有用户未表达任何可确定的年份、报告期或文档时，才把“要分析哪一期财报”作为缺失业务语义
                         - 当任务可单步完成时按需直接调用工具：价格类走行情工具；事件类走新闻工具；财报类走知识库工具
-                        - final_answer 的关键结论必须能在执行日志中找到依据；当新闻或知识库不可用时，基于已获得的行情与技术证据继续完成结论，不要重复调用同一工具
+                        - EPS/PE 任务必须使用 financial_report_metrics 获取结构化财报字段，再使用 financial_metric_calculator 计算；stock_snapshot_analysis 不负责计算财务指标
+                        - 新闻或知识库不可用时，基于已获得的行情与技术证据完成结论，不要重复调用同一工具
                         - 技术指标优先调用 technical_indicator_snapshot；不要先输出完整 historical_bars 再逐个重复调用指标，除非用户明确要求查看K线或单项指标
                         - 回答应优先覆盖：行情表现、事件催化、基本面信号、风险点
                         - 涉及“今天/近期”必须给出明确日期，避免模糊时效描述
@@ -63,6 +65,9 @@ public class StockAgentBusinessConfiguration {
                         
                         业务规则补充（股票场景）：
                         - 计划必须围绕“标的、时间、证据来源”组织，确保结论可追溯
+                        - 财报任务必须使用 report_period/report_document 组织，不得把行情 time_window 当作财报期间；缺少财报期间时不应进入规划器
+                        - “缺少财报期间”按业务语义判断，不按参数字符串判断；例如“2024年第一季度”已经完整，不得因工具需要 2024Q1 或 2024-03-31 而澄清
+                        - EPS/PE 计划必须调用 financial_report_metrics 和 financial_metric_calculator，不得用 knowledge_search 或 stock_snapshot_analysis 冒充结构化取数和计算
                         - 若缺少标的，不要直接做行情/新闻/知识检索；仅缺时间窗时不要自行填写具体日期，由股票工具统一解析截至当前日期近一个月窗口
                         - 若用户诉求是“推荐哪些股票”，建议先补齐风险偏好或筛选标准
                         - 禁止输出空入参调用：每个业务工具都必须包含完成当前步骤所需的最小参数
@@ -112,7 +117,7 @@ public class StockAgentBusinessConfiguration {
 
                 List<String> replies = new ArrayList<>();
                 List<String> parts = new ArrayList<>();
-                parts.add(hasTarget ? target : "AAPL");
+                parts.add(hasTarget ? target : "股票代码");
                 if (!hasTime) {
                     parts.add(time);
                 }
@@ -141,6 +146,9 @@ public class StockAgentBusinessConfiguration {
                 if (missingFields.contains("分析维度")) {
                     questions.add("你希望重点看哪类信息：行情、新闻催化、财报基本面、还是风险提示？");
                 }
+                if (missingFields.contains("财报期间") || missingFields.contains("指定财报")) {
+                    questions.add("请指定财报年份和类型，例如2024年报、2025一季报，或提供具体财报文件。");
+                }
                 if (userInput != null && !userInput.isBlank()) {
                     String normalized = userInput.toLowerCase();
                     if (normalized.contains("推荐") || normalized.contains("哪些股票")) {
@@ -158,9 +166,11 @@ public class StockAgentBusinessConfiguration {
             @Override
             public List<String> slotCandidates(String userInput, String slotName) {
                 return switch (slotName) {
-                    case "analysis_object" -> List.of("AAPL（推荐）", "600519", "自定义股票代码");
+                    case "analysis_object" -> List.of("输入股票代码（推荐）", "按股票名称识别", "取消本次分析");
                     case "time_window" -> List.of("近一周（推荐）", "近一月", "自定义区间");
                     case "analysis_dimension" -> List.of("价格波动/新闻事件（推荐）", "财报基本面/风险提示", "自定义维度");
+                    case "report_period" -> List.of("最新已披露年报", "最新已披露季报", "自定义年份和报告期");
+                    case "report_document" -> List.of("提供财报文件", "按股票代码和报告期检索", "取消本次计算");
                     default -> List.of();
                 };
             }
@@ -168,9 +178,12 @@ public class StockAgentBusinessConfiguration {
             @Override
             public String defaultValue(String userInput, String slotName, String memory) {
                 return switch (slotName) {
-                    case "analysis_object" -> inferTarget(userInput);
+                    // P0 对象没有安全默认值，缺失时必须由模型发起澄清，不能回退到示例股票。
+                    case "analysis_object" -> containsTarget(userInput) ? inferTarget(userInput) : "";
                     case "time_window" -> inferTimeWindow(firstNonBlank(memory, userInput));
                     case "analysis_dimension" -> inferFocus(firstNonBlank(memory, userInput));
+                    // 财报期间影响财务指标口径，业务层不提供静默默认值。
+                    case "report_period", "report_document" -> "";
                     default -> "";
                 };
             }
@@ -195,7 +208,14 @@ public class StockAgentBusinessConfiguration {
                 if (Pattern.compile("\\b\\d{6}\\b").matcher(text).find()) {
                     return true;
                 }
-                return Pattern.compile("\\b[A-Z]{1,5}\\b").matcher(text.toUpperCase()).find();
+                Matcher matcher = Pattern.compile("\\b[A-Z]{1,5}\\b").matcher(text.toUpperCase());
+                while (matcher.find()) {
+                    String candidate = matcher.group();
+                    if (!List.of("EPS", "PE", "ROE", "ROA", "PB", "ETF", "IPO").contains(candidate)) {
+                        return true;
+                    }
+                }
+                return false;
             }
 
             private boolean containsTimeWindow(String text) {
@@ -237,17 +257,20 @@ public class StockAgentBusinessConfiguration {
 
             private String inferTarget(String text) {
                 if (text == null || text.isBlank()) {
-                    return "AAPL";
+                    return "";
                 }
                 Matcher cnMatcher = Pattern.compile("\\b\\d{6}\\b").matcher(text);
                 if (cnMatcher.find()) {
                     return cnMatcher.group();
                 }
                 Matcher usMatcher = Pattern.compile("\\b[A-Z]{1,5}\\b").matcher(text.toUpperCase());
-                if (usMatcher.find()) {
-                    return usMatcher.group();
+                while (usMatcher.find()) {
+                    String candidate = usMatcher.group();
+                    if (!List.of("EPS", "PE", "ROE", "ROA", "PB", "ETF", "IPO").contains(candidate)) {
+                        return candidate;
+                    }
                 }
-                return "AAPL";
+                return "";
             }
 
             private String inferTimeWindow(String text) {
@@ -286,6 +309,112 @@ public class StockAgentBusinessConfiguration {
                     return first;
                 }
                 return second == null ? "" : second;
+            }
+        };
+    }
+
+    /**
+     * 股票计划安全校验：symbol/ticker 等关键执行对象必须能追溯到用户输入或前序步骤引用。
+     * 这条规则专门阻止规划模型在用户未指定标的时擅自使用 AAPL、600519 等示例值。
+     */
+    @Bean
+    public PlanSafetyValidator stockPlanSafetyValidator() {
+        return new PlanSafetyValidator() {
+            @Override
+            public List<String> validate(String userInput, List<PlanStepDefinition> plan) {
+                List<String> errors = new ArrayList<>();
+                String source = currentUserTurn(userInput).toUpperCase();
+                for (int i = 0; i < plan.size(); i++) {
+                    validateCriticalValues(plan.get(i).getInput(), source, "plan[" + i + "].input", errors);
+                }
+                validateFinancialCalculationPlan(source, plan, errors);
+                return errors;
+            }
+
+            /** EPS+PE 属于强契约任务：必须明确财报期间，并使用结构化取数和确定性计算工具。 */
+            private void validateFinancialCalculationPlan(
+                    String source, List<PlanStepDefinition> plan, List<String> errors) {
+                if (!(source.contains("EPS") && source.contains("PE"))) {
+                    return;
+                }
+                if (!hasExplicitReportPeriod(source)) {
+                    errors.add("EPS/PE 任务缺少 report_period 或 report_document；必须先调用 clarify_requirement 获取用户确认");
+                }
+                boolean hasReportTool = plan.stream()
+                        .anyMatch(step -> "financial_report_metrics".equals(step.getTool()));
+                boolean hasCalculator = plan.stream()
+                        .anyMatch(step -> "financial_metric_calculator".equals(step.getTool()));
+                if (!hasReportTool) {
+                    errors.add("EPS/PE 计划必须包含 financial_report_metrics，knowledge_search 不能替代结构化财报取数");
+                }
+                if (!hasCalculator) {
+                    errors.add("EPS/PE 计划必须包含 financial_metric_calculator，stock_snapshot_analysis 不负责指标计算");
+                    return;
+                }
+                PlanStepDefinition calculator = plan.stream()
+                        .filter(step -> "financial_metric_calculator".equals(step.getTool()))
+                        .findFirst().orElse(null);
+                if (calculator == null) return;
+                List<String> outputPaths = calculator.getRequiredOutputs().stream()
+                        .map(item -> item.getPath().toLowerCase())
+                        .toList();
+                if (!outputPaths.contains("data.eps") || !outputPaths.contains("data.pe")) {
+                    errors.add("financial_metric_calculator 步骤的 required_outputs 必须同时包含 data.eps 和 data.pe");
+                }
+            }
+
+            private boolean hasExplicitReportPeriod(String source) {
+                String normalized = source == null ? "" : source;
+                return FinancialReportPeriodResolver.findInText(normalized).isPresent()
+                        || normalized.contains("最新财报")
+                        || normalized.contains("最新年报")
+                        || normalized.contains("最新季报")
+                        || normalized.contains("财报文件")
+                        || normalized.contains("REPORT_PERIOD");
+            }
+
+            /** 只信任本轮用户明确输入，不能把历史助手举例当作用户确认的股票代码。 */
+            private String currentUserTurn(String input) {
+                if (input == null || input.isBlank()) {
+                    return "";
+                }
+                int marker = input.lastIndexOf("本轮用户:");
+                return marker >= 0 ? input.substring(marker + "本轮用户:".length()).trim() : input.trim();
+            }
+
+            @SuppressWarnings("unchecked")
+            private void validateCriticalValues(
+                    Object value, String source, String path, List<String> errors) {
+                if (value instanceof Map<?, ?> map) {
+                    for (Map.Entry<?, ?> entry : map.entrySet()) {
+                        String key = String.valueOf(entry.getKey());
+                        Object child = entry.getValue();
+                        String childPath = path + "." + key;
+                        if (isSecurityKey(key) && child instanceof String text && isLiteralSecurityCode(text)
+                                && !source.contains(text.trim().toUpperCase())) {
+                            errors.add(childPath + " 的关键标的 " + text
+                                    + " 无法追溯到用户输入；必须先调用 clarify_requirement 获取用户确认");
+                        }
+                        validateCriticalValues(child, source, childPath, errors);
+                    }
+                } else if (value instanceof List<?> list) {
+                    for (int i = 0; i < list.size(); i++) {
+                        validateCriticalValues(list.get(i), source, path + "[" + i + "]", errors);
+                    }
+                }
+            }
+
+            private boolean isSecurityKey(String key) {
+                String normalized = key == null ? "" : key.toLowerCase();
+                return "symbol".equals(normalized) || "ticker".equals(normalized);
+            }
+
+            private boolean isLiteralSecurityCode(String value) {
+                if (value == null || value.isBlank() || value.contains("$ref")) {
+                    return false;
+                }
+                String normalized = value.trim().toUpperCase();
+                return normalized.matches("[A-Z]{1,5}") || normalized.matches("\\d{6}");
             }
         };
     }

@@ -77,6 +77,13 @@ public class PlanExecutor {
                 failureReasons.add(reason);
                 continue;
             }
+            List<String> incompleteDependencies = incompleteDependencies(state.planSteps, step.getDependsOnStepIds());
+            if (!incompleteDependencies.isEmpty()) {
+                String reason = "显式前置步骤未完成，不能继续执行: " + String.join(",", incompleteDependencies);
+                recordPreExecutionFailure(state, i, step, reason, "plan_dependencies_blocked_" + step.getStepId());
+                failureReasons.add(reason);
+                continue;
+            }
             String toolName = step.getToolName();
             if (toolName.isEmpty()) {
                 String reason = "计划步骤缺少 tool: step=" + i;
@@ -106,6 +113,8 @@ public class PlanExecutor {
                     "previous_step_id", step.getPreviousStepId() == null ? "" : step.getPreviousStepId(),
                     "next_step_id", step.getNextStepId() == null ? "" : step.getNextStepId()));
             Map<String, Object> toolInput = PlanInputResolver.resolve(step.getInput(), i, state.planSteps);
+            // 计划内执行也写入统一动作指纹，阻止计划完成后模型再次调用完全相同的工具和参数。
+            state.observedActionFingerprints.add(fingerprintStep(toolName, toolInput));
             state.trace.record(ExecutionEventType.TOOL_REQUESTED, Map.of(
                     "round", round,
                     "tool", toolName,
@@ -247,6 +256,19 @@ public class PlanExecutor {
         return false;
     }
 
+    private List<String> incompleteDependencies(List<PlanStepState> steps, List<String> dependencyIds) {
+        List<String> incomplete = new ArrayList<>();
+        for (String dependencyId : dependencyIds == null ? List.<String>of() : dependencyIds) {
+            if (dependencyId == null || dependencyId.isBlank()) {
+                continue;
+            }
+            if (!isPreviousStepCompleted(steps, dependencyId)) {
+                incomplete.add(dependencyId);
+            }
+        }
+        return incomplete;
+    }
+
     /**
      * 缓存成功步骤输出，重规划生成相同步骤时可直接复用。
      */
@@ -341,13 +363,17 @@ public class PlanExecutor {
      * 深拷贝计划步骤，避免修订合并时修改原始计划对象。
      */
     private PlanStepDefinition copyStep(PlanStepDefinition step) {
-        return new PlanStepDefinition(
+        PlanStepDefinition copy = new PlanStepDefinition(
                 step.getName(),
                 step.getDescription(),
                 step.getTool(),
                 new LinkedHashMap<>(step.getInput()),
                 step.getExpectedOutcome(),
                 step.isDependsOnPrevious());
+        copy.setStepId(step.getStepId());
+        copy.setRequiredOutputs(new ArrayList<>(step.getRequiredOutputs()));
+        copy.setDependsOnStepIds(new ArrayList<>(step.getDependsOnStepIds()));
+        return copy;
     }
 
     /**

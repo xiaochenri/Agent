@@ -12,6 +12,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import javax.sql.DataSource;
 
 import org.springframework.beans.factory.annotation.Value;
@@ -25,6 +27,12 @@ public class ResearchEvidenceTools extends StockToolSupport {
             """;
     private static final String KNOWLEDGE_SCHEMA = """
             {"type":"object","properties":{"query":{"type":"string"},"symbol":{"type":"string"},"top_k":{"type":"integer"}},"required":["query"]}
+            """;
+    private static final String FINANCIAL_REPORT_SCHEMA = """
+            {"type":"object","properties":{"symbol":{"type":"string","pattern":"^(\\d{6}|[A-Z]{1,5})$"},"report_period":{"type":"string","minLength":1,"description":"明确且可归一化的财报期间，如2024年Q1或2024-03-31"},"top_k":{"type":"integer","minimum":1}},"required":["symbol","report_period"],"additionalProperties":false}
+            """;
+    private static final String FINANCIAL_REPORT_OUTPUT_SCHEMA = """
+            {"type":"object","properties":{"tool":{"type":"string","enum":["financial_report_metrics"]},"status":{"type":"string","enum":["success","failed"]},"validation_passed":{"type":"boolean"},"validation_rules":{"type":"array","items":{"type":"string"}},"validation_errors":{"type":"array","items":{"type":"string"}},"retryable":{"type":"boolean"},"error_code":{"type":"string"},"data":{"type":"object","properties":{"symbol":{"type":"string"},"report_period":{"type":"string","format":"date"},"report_type":{"type":"string","enum":["Q1","H1","Q3","ANNUAL"]},"net_profit":{"type":["number","null"]},"total_shares":{"type":["number","null"]},"reported_basic_eps":{"type":["number","null"]},"currency":{"type":"string"},"source":{"type":"string"},"source_documents":{"type":"array","items":{"type":"object"}},"missing_fields":{"type":"array","items":{"type":"string"}},"calculation_ready":{"type":"boolean"},"data_quality":{"type":"string","enum":["valid","partial","invalid"]}},"required":["symbol","report_period","report_type","net_profit","total_shares","reported_basic_eps","currency","source","source_documents","missing_fields","calculation_ready","data_quality"],"additionalProperties":false},"metadata":{"type":"object"}},"required":["tool","status","validation_passed","validation_rules","validation_errors","retryable","error_code","data","metadata"],"additionalProperties":false}
             """;
     private final OceanBaseVectorStore vectorStore;
     private final int vectorDimensions;
@@ -69,15 +77,112 @@ public class ResearchEvidenceTools extends StockToolSupport {
             List<Map<String, Object>> items = new ArrayList<>();
             for (VectorSearchResult result : results)
                 items.add(Map.of("id", result.id(), "score", result.score(), "distance", result.distance(), "content", truncate(result.content(), 500), "metadata", result.metadataJson()));
-            return success("knowledge_search", Map.of("symbol", symbol, "query", query, "top_k", topK, "source", "stockmind_knowledge", "items", items), "[\"query 非空\",\"向量检索完成\"]");
-        } catch (Exception e) {
             Map<String, Object> data = new LinkedHashMap<>();
             data.put("symbol", symbol);
             data.put("query", query);
             data.put("top_k", topK);
             data.put("source", "stockmind_knowledge");
-            data.put("items", List.of(Map.of("id", "knowledge-1", "score", 0.0, "content", "财报、公告与经营信息摘要。")));
-            return success("knowledge_search", data, "[\"query 非空\",\"返回结构化基本面证据\"]");
+            data.put("items", items);
+            data.put("data_quality", items.isEmpty() ? "invalid" : "valid");
+            return success("knowledge_search", data, "[\"query 非空\",\"向量检索完成\"]");
+        } catch (Exception e) {
+            // 基础设施异常不能伪装成检索成功，否则计划会把占位摘要当成真实财报证据。
+            return fail("knowledge_search", "知识库暂时不可用: " + e.getClass().getSimpleName(), true);
+        }
+    }
+
+    @AgentTool(
+            name = "financial_report_metrics",
+            title = "结构化财报指标读取",
+            namespace = "finance.fundamental",
+            category = "financial_report",
+            tags = {"stock", "financial_report", "metrics", "readonly"},
+            inputSchema = FINANCIAL_REPORT_SCHEMA,
+            outputSchema = FINANCIAL_REPORT_OUTPUT_SCHEMA,
+            description = "按明确 report_period 检索财报并提取归母净利润、总股本和披露的基本EPS；返回 data_quality、missing_fields 和 calculation_ready。")
+    public String financialReportMetrics(Map<String, Object> input, String raw) {
+        String symbol = symbol(input, raw);
+        String rawReportPeriod = asString(input.get("report_period"));
+        FinancialReportPeriodResolver.ResolvedPeriod resolvedPeriod =
+                FinancialReportPeriodResolver.resolve(rawReportPeriod).orElse(null);
+        String reportPeriod = resolvedPeriod == null ? "" : resolvedPeriod.reportPeriod();
+        if (symbol.isBlank()) return fail("financial_report_metrics", "symbol 不能为空", false);
+        if (reportPeriod.isBlank()) return fail("financial_report_metrics", "report_period 不能为空，必须先完成澄清", false);
+        int topK = topK(input.get("top_k"), defaultTopK);
+        try {
+            vectorStore.createTableIfNotExists();
+            String query = symbol + " " + reportPeriod + " 归母净利润 总股本 基本每股收益";
+            List<VectorSearchResult> results = vectorStore.search(
+                    TextVectorBuilder.build(query, vectorDimensions), topK, DistanceMetric.COSINE);
+            StringBuilder evidenceText = new StringBuilder();
+            List<Map<String, Object>> sources = new ArrayList<>();
+            for (VectorSearchResult result : results) {
+                evidenceText.append(result.content()).append('\n');
+                sources.add(Map.of(
+                        "id", result.id(),
+                        "score", result.score(),
+                        "content", truncate(result.content(), 300),
+                        "metadata", result.metadataJson()));
+            }
+            Double netProfit = extractAmount(evidenceText.toString(),
+                    "(?:归属于上市公司股东的净利润|归母净利润|净利润)", false);
+            Double totalShares = extractAmount(evidenceText.toString(),
+                    "(?:加权平均股本|总股本|期末股本)", true);
+            Double reportedEps = extractPlainNumber(evidenceText.toString(),
+                    "(?:基本每股收益|基本EPS|EPS)");
+            List<String> missingFields = new ArrayList<>();
+            if (netProfit == null) missingFields.add("net_profit");
+            if (totalShares == null) missingFields.add("total_shares");
+            if (reportedEps == null) missingFields.add("reported_basic_eps");
+            boolean ready = reportedEps != null || (netProfit != null && totalShares != null);
+
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("symbol", symbol);
+            data.put("report_period", reportPeriod);
+            data.put("report_type", resolvedPeriod.reportType());
+            data.put("net_profit", netProfit);
+            data.put("total_shares", totalShares);
+            data.put("reported_basic_eps", reportedEps);
+            data.put("currency", "CNY");
+            data.put("source", "stockmind_knowledge");
+            data.put("source_documents", sources);
+            data.put("missing_fields", missingFields);
+            data.put("calculation_ready", ready);
+            data.put("data_quality", ready ? "valid" : sources.isEmpty() ? "invalid" : "partial");
+            return success("financial_report_metrics", data,
+                    "[\"symbol和report_period非空\",\"财报指标来自检索文档\",\"输出计算就绪状态\"]");
+        } catch (Exception e) {
+            return fail("financial_report_metrics", "财报指标检索暂时不可用: " + e.getClass().getSimpleName(), true);
+        }
+    }
+
+    /** 识别带元/万元/亿元或股/万股/亿股单位的财报数值，并统一换算为基础单位。 */
+    private Double extractAmount(String text, String labelPattern, boolean shares) {
+        Pattern pattern = Pattern.compile(labelPattern + "[^\\d-]{0,30}(-?[\\d,]+(?:\\.\\d+)?)\\s*(亿元|万元|元|亿股|万股|股)",
+                Pattern.CASE_INSENSITIVE);
+        Matcher matcher = pattern.matcher(text == null ? "" : text);
+        if (!matcher.find()) return null;
+        try {
+            double value = Double.parseDouble(matcher.group(1).replace(",", ""));
+            String unit = matcher.group(2);
+            if ("亿元".equals(unit) || "亿股".equals(unit)) value *= 100_000_000D;
+            if ("万元".equals(unit) || "万股".equals(unit)) value *= 10_000D;
+            if (shares && !(unit.endsWith("股"))) return null;
+            if (!shares && unit.endsWith("股")) return null;
+            return value;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private Double extractPlainNumber(String text, String labelPattern) {
+        Matcher matcher = Pattern.compile(labelPattern + "[^\\d-]{0,20}(-?[\\d,]+(?:\\.\\d+)?)",
+                Pattern.CASE_INSENSITIVE).matcher(text == null ? "" : text);
+        if (!matcher.find()) return null;
+        try {
+            return Double.parseDouble(matcher.group(1).replace(",", ""));
+        } catch (NumberFormatException ignored) {
+            return null;
         }
     }
 }
