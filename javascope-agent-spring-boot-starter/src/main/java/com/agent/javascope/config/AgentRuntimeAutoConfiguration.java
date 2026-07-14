@@ -117,8 +117,8 @@ public class AgentRuntimeAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(name = "retryToolMiddleware")
     @Order(40)
-    public ToolMiddleware retryToolMiddleware() {
-        return new RetryToolMiddleware(1);
+    public ToolMiddleware retryToolMiddleware(AgentRuntimeProperties properties) {
+        return new RetryToolMiddleware(properties.getToolMaxRetries());
     }
 
     @Bean
@@ -201,13 +201,15 @@ public class AgentRuntimeAutoConfiguration {
             AgentToolExecutor agentToolExecutor,
             AgentChatModelClient agentChatModelClient,
             AgentJsonCodecUtil json,
-            AgentRuntimeProperties properties) {
+            AgentRuntimeProperties properties,
+            ObjectProvider<PlanSafetyValidator> planSafetyValidator) {
         return new RevisePlanTool(
                 promptProvider,
                 agentToolExecutor,
                 agentChatModelClient,
                 json,
-                properties.getPlanMaxRetry());
+                properties.getPlanMaxRetry(),
+                planSafetyValidator.getIfAvailable(() -> new PlanSafetyValidator() {}));
     }
 
     @Bean

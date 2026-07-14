@@ -180,6 +180,10 @@ Agent 执行
 
 `clarify_requirement` 负责校验和生成结构化澄清上下文，下一轮仍由模型生成面向用户的自然回复。它只处理缺少业务信息、实质语义歧义和用户授权，不负责把自然语言转换成工具参数，也不得因格式、编码、schema、工具失败或能力限制要求用户澄清。`ask` 必须声明 `clarification_kind` 和 `materially_different_outcomes=true`；语义歧义还必须通过 `outcome_impacts` 给出至少两个实质不同的业务后果，运行时同时提供对应候选项。`missing_slots` 仅描述用户尚未表达的业务语义。澄清动作具有最高优先级，运行时会阻止它与 `create_plan` 或业务工具在同一轮混合执行。规划器只接收 `allowed_in_plan_step=true` 的工具；股票业务还会校验 `symbol/ticker` 的来源，禁止使用用户未明确提供的示例标的。
 
+计划步骤失败或依赖阻塞后，运行时进入确定性的恢复门禁：模型只能调用 `revise_plan`，或停止调用工具并基于现有证据输出保守 `final_answer`。恢复期间业务工具、`create_plan` 和 `clarify_requirement` 均不可执行；当前策略不自动重试失败工具，即使工具结果声明 `retryable=true`。
+
+`create_plan` 与 `revise_plan` 共用工具输入/输出契约和业务 `PlanSafetyValidator`。修订补丁必须先合并回当前计划，再对完整计划重新校验必填输入、未声明字段、跨步骤引用和业务工具链；`current_plan/failed_step/failed_steps/failure_context` 等恢复上下文始终由运行时权威状态覆盖模型输入。
+
 ## 配置
 
 `stockmind-bootstrap/src/main/resources/application.yml` 会导入 `javascope-agent-spring-boot-starter/src/main/resources/application-agent-runtime.yml`。
@@ -208,6 +212,7 @@ export AGENT_RUNTIME_FINAL_ANSWER_VALIDATION_ENABLED=false
 - `java.agent-runtime.react-max-tool-calls`: react 工具动作上限，默认 5
 - 最终合成始终额外保留 1 次模型调用，且禁止继续调用工具
 - `java.agent-runtime.plan-max-retry`: 规划 JSON 重试次数
+- `java.agent-runtime.tool-max-retries`: `retryable=true` 工具的自动重试次数，默认 `0`；计划失败后进入 `revise_plan`/保守结束门禁
 - `java.agent-runtime.final-answer-validation-enabled`: 是否开启最终答案独立校验
 - `java.agent-runtime.temperature`: 模型温度
 - `java.agent-runtime.timeout-seconds`: 模型请求超时

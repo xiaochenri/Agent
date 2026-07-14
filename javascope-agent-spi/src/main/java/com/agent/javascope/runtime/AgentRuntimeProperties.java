@@ -14,6 +14,8 @@ public class AgentRuntimeProperties {
     private int reactMaxRounds = 6;
     private int reactMaxToolCalls = 5;
     private int planMaxRetry = 2;
+    /** 幂等工具返回 retryable=true 后的自动重试次数；默认关闭，由计划恢复统一决策。 */
+    private int toolMaxRetries = 0;
     private boolean finalAnswerValidationEnabled = false;
     private double temperature = 0.2;
     private int timeoutSeconds = 60;
@@ -118,6 +120,14 @@ public class AgentRuntimeProperties {
 
     public void setPlanMaxRetry(int planMaxRetry) {
         this.planMaxRetry = planMaxRetry;
+    }
+
+    public int getToolMaxRetries() {
+        return toolMaxRetries;
+    }
+
+    public void setToolMaxRetries(int toolMaxRetries) {
+        this.toolMaxRetries = Math.max(0, toolMaxRetries);
     }
 
     public boolean isFinalAnswerValidationEnabled() {

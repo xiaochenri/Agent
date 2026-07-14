@@ -80,9 +80,13 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
         boolean clarificationAvailable = toolsJson != null && toolsJson.contains("\"clarify_requirement\"");
         boolean clarificationResponsePhase = validationFeedback != null
                 && validationFeedback.contains("不要调用任何工具，仅输出 final_answer");
+        boolean planRecoveryRequired = validationFeedback != null
+                && (validationFeedback.contains("plan_recovery_required")
+                || validationFeedback.contains("只能调用 revise_plan")
+                || validationFeedback.contains("工具动作只能是 revise_plan"));
         String modeRules = clarificationResponsePhase
                 ? ""
-                : actionModeRules(executionMode, hasPlan, clarificationAvailable);
+                : actionModeRules(executionMode, hasPlan, clarificationAvailable, planRecoveryRequired);
         String clarificationRules = clarificationAvailable && !clarificationResponsePhase ? """
                 - clarify_requirement 只处理无法从上下文、惯例或安全默认中消解的业务语义或授权问题
                 - 参数抽取、格式/编码/schema 适配、工具失败、证据不足和能力限制不属于需求澄清
@@ -127,11 +131,17 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                         validationFeedback);
     }
 
-    private String actionModeRules(String executionMode, boolean hasPlan, boolean clarificationAvailable) {
+    private String actionModeRules(
+            String executionMode,
+            boolean hasPlan,
+            boolean clarificationAvailable,
+            boolean planRecoveryRequired) {
         return switch (executionMode == null ? "" : executionMode) {
             case "direct" -> "- direct：最多调用一个完成已知事实查询所需的工具；证据不足时给出保守结论和局限。\n";
             case "react" -> "- react：每轮根据已有观察选择一个信息增益最大的未重复工具；证据足够时立即回答，不预先执行固定工具链。\n";
-            case "planned" -> hasPlan
+            case "planned" -> planRecoveryRequired
+                    ? "- planned 恢复：只能调用 revise_plan；不得重用失败工具入参，即使结果标记 retryable=true；若无有效替代则输出保守 final_answer。\n"
+                    : hasPlan
                     ? "- planned：按当前计划状态继续；步骤失败、阻塞或校验要求重规划时使用 revise_plan，不得沿用已失败计划。\n"
                     : clarificationAvailable
                             ? "- planned 首轮：业务语义完整时调用 create_plan，否则调用 clarify_requirement；本轮只选一个控制动作。\n"
@@ -242,6 +252,7 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                 强制约束: 仅输出如下 JSON，不要输出 plan：
                 {"task_understanding":{},"replacements":[{"replace_step_id":"失败步骤的 step_id","steps":[{"step_id":"新的唯一ID","name":"","description":"","tool":"","input":{},"expected_outcome":"","required_outputs":[{"path":"data.field","type":"string","nullable":false}],"depends_on_previous":false,"depends_on_step_ids":[]}]}]}
                 replacements 必须覆盖每个失败/阻塞 step_id；只替换这些步骤，禁止输出已成功步骤。steps 可为空，表示明确放弃该步骤。新步骤必须避免所有历史失败步骤的步骤-工具-入参组合。
+                retryable=true 仅表示工具能力，当前恢复策略禁止重试相同工具入参；没有满足工具契约和业务约束的替代步骤时，将对应 replacements.steps 置空。
 
                 禁止复用步骤指纹: %s
 

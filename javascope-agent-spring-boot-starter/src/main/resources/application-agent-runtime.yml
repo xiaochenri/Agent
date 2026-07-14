@@ -12,6 +12,8 @@ java:
     react-max-rounds: ${AGENT_RUNTIME_REACT_MAX_ROUNDS:6}
     react-max-tool-calls: ${AGENT_RUNTIME_REACT_MAX_TOOL_CALLS:5}
     plan-max-retry: 2
+    # 默认不重试失败工具；计划失败后只允许 revise_plan 或保守结束。
+    tool-max-retries: ${AGENT_RUNTIME_TOOL_MAX_RETRIES:0}
     final-answer-validation-enabled: ${AGENT_RUNTIME_FINAL_ANSWER_VALIDATION_ENABLED:false}
     temperature: 0.2
     timeout-seconds: 60

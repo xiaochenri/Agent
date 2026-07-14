@@ -84,6 +84,15 @@ public class ToolCallDispatcher {
                 state.validationFeedback = "当前执行模式不允许创建或修订计划；请基于已有观察选择业务工具，或输出 final_answer。";
                 continue;
             }
+            if (state.planRecoveryRequired && !"revise_plan".equals(toolName)) {
+                state.executionLog.add(buildToolLog(round, toolName, call.getInput(),
+                        buildDirectCallFailure(toolName,
+                                "plan recovery requires revise_plan or conservative final_answer")));
+                state.riskFlags.add("plan_recovery_non_revision_tool_blocked_" + toolName);
+                state.validationFeedback = "当前计划处于失败恢复状态；禁止调用业务工具、create_plan 或 clarify_requirement。"
+                        + "请选择 revise_plan，或不调用工具并输出基于现有证据的保守 final_answer。";
+                continue;
+            }
             if (requiresPlanGate(definition, toolName, state)) {
                 state.executionLog.add(buildToolLog(round, toolName, call.getInput(),
                         buildDirectCallFailure(toolName, "business tool requires create_plan before execution")));
@@ -194,24 +203,17 @@ public class ToolCallDispatcher {
             String effectiveFeedback = json.normalize(
                     state.validationFeedback,
                     json.normalize(state.lastValidationFeedback, "执行结果与预期不一致"));
-            enriched.putIfAbsent("reason", effectiveFeedback);
-            enriched.putIfAbsent("current_plan", copyPlan(state.latestPlan));
-            enriched.putIfAbsent("failed_step_index", state.lastFailedStepIndex);
-            enriched.putIfAbsent("failed_step", buildFailedStepForRevision(state));
-            enriched.putIfAbsent("failed_steps", buildFailedStepsForRevision(state));
-            if (!state.lastStepEvaluation.evidence().isEmpty()) {
-                enriched.putIfAbsent("failure_context", state.lastStepEvaluation.toMap());
-            }
-            if (!state.lastFailedPlanFingerprint.isEmpty()) {
-                enriched.putIfAbsent("previous_plan_fingerprint", state.lastFailedPlanFingerprint);
-            }
-            if (!state.completedStepOutputs.isEmpty()) {
-                enriched.putIfAbsent("completed_step_fingerprints", new ArrayList<>(state.completedStepOutputs.keySet()));
-            }
-            if (!state.failedStepHistory.isEmpty()) {
-                enriched.putIfAbsent("failed_step_history", new ArrayList<>(state.failedStepHistory.values()));
-                enriched.putIfAbsent("failed_step_fingerprints", new ArrayList<>(state.failedStepHistory.keySet()));
-            }
+            // 以下字段属于运行时权威状态，禁止模型用过期或不完整上下文覆盖。
+            enriched.put("reason", effectiveFeedback);
+            enriched.put("current_plan", copyPlan(state.latestPlan));
+            enriched.put("failed_step_index", state.lastFailedStepIndex);
+            enriched.put("failed_step", buildFailedStepForRevision(state));
+            enriched.put("failed_steps", buildFailedStepsForRevision(state));
+            enriched.put("failure_context", state.lastStepEvaluation.toMap());
+            enriched.put("previous_plan_fingerprint", state.lastFailedPlanFingerprint);
+            enriched.put("completed_step_fingerprints", new ArrayList<>(state.completedStepOutputs.keySet()));
+            enriched.put("failed_step_history", new ArrayList<>(state.failedStepHistory.values()));
+            enriched.put("failed_step_fingerprints", new ArrayList<>(state.failedStepHistory.keySet()));
         }
         return enriched;
     }
@@ -242,11 +244,22 @@ public class ToolCallDispatcher {
             state.latestPlan = mergeRevisionIntoPlan(plan, data.getReplacements(), state);
             state.latestPlanResult.setPlan(state.latestPlan);
             rebuildPlanSteps(state, sourceTool);
+            if (isAbandonmentRevision(data.getReplacements())) {
+                state.planExecutionCompleted = true;
+                state.riskFlags.add("plan_recovery_abandoned");
+                state.validationFeedback = "计划修订已明确放弃全部失败路径；"
+                        + "请基于现有证据生成保守 final_answer，不要继续调用工具。";
+            }
         } else if (!plan.isEmpty()) {
             state.latestPlan = mergeRevisionIntoPlan(plan, List.of(), state);
             state.latestPlanResult.setPlan(state.latestPlan);
             rebuildPlanSteps(state, sourceTool);
         }
+    }
+
+    private boolean isAbandonmentRevision(List<PlanStepReplacement> replacements) {
+        return !replacements.isEmpty()
+                && replacements.stream().allMatch(replacement -> replacement.getSteps().isEmpty());
     }
 
     /**
@@ -269,6 +282,10 @@ public class ToolCallDispatcher {
      */
     private void rebuildPlanSteps(RuntimeState state, String sourceTool) {
         state.planExecutionCompleted = false;
+        state.planRecoveryRequired = false;
+        state.riskFlags.removeIf("plan_recovery_required"::equals);
+        state.lastFailedStepIndex = -1;
+        state.lastFailedPlanFingerprint = "";
         state.planVersion++;
         state.currentPlanId = "plan_v" + state.planVersion;
         state.planSteps.clear();

@@ -10,6 +10,8 @@ import com.agent.javascope.contract.plan.FailedStepHistoryItem;
 import com.agent.javascope.contract.plan.PlanStepDefinition;
 import com.agent.javascope.tool.contract.ToolOutputContractInspector;
 import com.agent.javascope.tool.contract.PlanToolReferenceInspector;
+import com.agent.javascope.tool.contract.PlanToolInputContractInspector;
+import com.agent.javascope.tool.runtime.PlanSafetyValidator;
 import com.agent.javascope.entity.plan.PlanToolData;
 import com.agent.javascope.entity.plan.PlanStepFailure;
 import com.agent.javascope.entity.plan.PlanStepReplacement;
@@ -25,6 +27,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.LinkedHashMap;
 
 public class RevisePlanTool {
 
@@ -33,6 +36,7 @@ public class RevisePlanTool {
     private final AgentChatModelClient agentChatModelClient;
     private final AgentJsonCodecUtil json;
     private final int maxRetry;
+    private final PlanSafetyValidator planSafetyValidator;
 
     public RevisePlanTool(
             AgentPromptProvider promptProvider,
@@ -40,11 +44,22 @@ public class RevisePlanTool {
             AgentChatModelClient agentChatModelClient,
             AgentJsonCodecUtil json,
             int maxRetry) {
+        this(promptProvider, toolExecutor, agentChatModelClient, json, maxRetry, new PlanSafetyValidator() {});
+    }
+
+    public RevisePlanTool(
+            AgentPromptProvider promptProvider,
+            AgentToolExecutor toolExecutor,
+            AgentChatModelClient agentChatModelClient,
+            AgentJsonCodecUtil json,
+            int maxRetry,
+            PlanSafetyValidator planSafetyValidator) {
         this.promptProvider = promptProvider;
         this.toolExecutor = toolExecutor;
         this.agentChatModelClient = agentChatModelClient;
         this.json = json;
         this.maxRetry = maxRetry;
+        this.planSafetyValidator = planSafetyValidator == null ? new PlanSafetyValidator() {} : planSafetyValidator;
     }
 
     @AgentTool(
@@ -124,6 +139,13 @@ public class RevisePlanTool {
                     .collect(java.util.stream.Collectors.toSet());
             List<String> errors = validateReplacements(
                     replacements, failedSteps, completedStepFingerprints, failedStepFingerprints, existingStepIds);
+            List<PlanStepDefinition> mergedPlan = mergeReplacements(currentPlan, replacements);
+            errors.addAll(validateCompletePlan(mergedPlan));
+            // 全部使用空步骤替换表示主动放弃失败路径并保守结束，不再要求剩余计划完成原任务。
+            // replacement 目标覆盖、残留依赖和完整结构仍由前面的校验保证。
+            if (!isAbandonmentRevision(replacements)) {
+                errors.addAll(planSafetyValidator.validate(userInput, mergedPlan));
+            }
             latest = candidate;
             if (errors.isEmpty()) {
                 return json.toJson(ToolResultPayload.success("revise_plan", latest));
@@ -185,6 +207,8 @@ public class RevisePlanTool {
                 } else if (!toolDefinition.isAllowedInPlanStep()) {
                     errors.add("plan[" + i + "].tool 不允许作为计划步骤: " + step.getTool());
                 } else {
+                    errors.addAll(PlanToolInputContractInspector.validate(
+                            toolDefinition, step.getInput(), "plan[" + i + "]"));
                     errors.addAll(ToolOutputContractInspector.validate(
                             toolDefinition, step.getRequiredOutputs(), "plan[" + i + "]"));
                 }
@@ -210,6 +234,39 @@ public class RevisePlanTool {
         }
         errors.addAll(PlanToolReferenceInspector.validate(plan, toolExecutor));
         return errors;
+    }
+
+    /** replacement 必须先合并回当前计划，再按完整可执行计划重新校验。 */
+    private List<PlanStepDefinition> mergeReplacements(
+            List<PlanStepDefinition> currentPlan, List<PlanStepReplacement> replacements) {
+        Map<String, List<PlanStepDefinition>> patches = new LinkedHashMap<>();
+        for (PlanStepReplacement replacement : replacements) {
+            if (!normalize(replacement.getReplaceStepId(), "").isEmpty()) {
+                patches.put(replacement.getReplaceStepId(), replacement.getSteps());
+            }
+        }
+        List<PlanStepDefinition> merged = new ArrayList<>();
+        for (PlanStepDefinition existing : currentPlan) {
+            List<PlanStepDefinition> replacement = patches.get(existing.getStepId());
+            if (replacement == null) {
+                merged.add(existing);
+            } else {
+                merged.addAll(replacement);
+            }
+        }
+        return merged;
+    }
+
+    private List<String> validateCompletePlan(List<PlanStepDefinition> plan) {
+        if (plan.isEmpty()) {
+            return List.of(); // 删除所有失败路径表示放弃执行，由外层生成保守结论。
+        }
+        return validatePlanStructure(plan, Set.of());
+    }
+
+    private boolean isAbandonmentRevision(List<PlanStepReplacement> replacements) {
+        return !replacements.isEmpty()
+                && replacements.stream().allMatch(replacement -> replacement.getSteps().isEmpty());
     }
 
     private String fingerprintPlan(List<PlanStepDefinition> plan) {

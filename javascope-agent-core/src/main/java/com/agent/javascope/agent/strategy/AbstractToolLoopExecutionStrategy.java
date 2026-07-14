@@ -183,6 +183,24 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
             return List.of(clarification);
         }
         if ("planned".equals(mode)) {
+            if (state.planRecoveryRequired) {
+                List<AgentToolCall> revisions = toolCalls.stream()
+                        .filter(call -> "revise_plan".equals(call.getName()))
+                        .toList();
+                if (revisions.isEmpty()) {
+                    state.riskFlags.add("plan_recovery_invalid_action_blocked");
+                    state.validationFeedback = "当前计划处于失败恢复状态；工具动作只能是 revise_plan。"
+                            + "如果不再修订计划，请停止调用工具并输出基于现有证据的保守 final_answer。";
+                    return List.of();
+                }
+                if (toolCalls.size() > 1 || revisions.size() > 1) {
+                    state.riskFlags.add("plan_recovery_multiple_actions_truncated");
+                    state.validationFeedback = "计划恢复每轮只允许一个 revise_plan；本轮忽略其他动作。";
+                }
+                // revise_plan 的原始输入通常为空，实际失败上下文由 Dispatcher 自动补齐；
+                // 这里不按原始输入做重复指纹，避免把新的修订上下文误判为重复动作。
+                return List.of(revisions.get(0));
+            }
             if (state.latestPlan.isEmpty() && toolCalls.size() > 1) {
                 state.riskFlags.add("planned_initial_multiple_actions_truncated");
                 state.validationFeedback = "planned 首轮只能选择一个控制动作，本轮仅执行第一项。";

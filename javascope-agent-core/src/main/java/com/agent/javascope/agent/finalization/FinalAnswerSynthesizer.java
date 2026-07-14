@@ -120,7 +120,9 @@ public class FinalAnswerSynthesizer {
     private boolean tryFinalSynthesis(String input, RuntimeState state, ReasoningCallback reasoningCallback) {
         String executionMode = state.routeDecision.getExecutionMode();
         if ("planned".equals(executionMode) && isPlanTerminal(state)) {
-            state.validationFeedback = "计划执行已结束。请基于全部执行日志输出 final_answer，不要继续调用工具。";
+            state.validationFeedback = "计划执行已结束。请基于全部执行日志输出 final_answer，不要继续调用工具。"
+                    + "必须区分工具能力与执行策略：retryable=true 不能表述为工具不可重试，"
+                    + "只能说明当前策略未重试或未形成有效替代计划。";
         } else if ("react".equals(executionMode)) {
             state.validationFeedback = "ReAct 推理轮次已耗尽。请仅基于已有观察输出保守的 final_answer，"
                     + "明确证据、局限和后续建议，不要继续调用工具。";

@@ -49,6 +49,11 @@ public class PlanReActExecutionStrategy extends AbstractToolLoopExecutionStrateg
      */
     @Override
     protected List<Map<String, Object>> visibleToolSchemas(RuntimeState state) {
+        if (state.planRecoveryRequired) {
+            return toolSchemas.stream()
+                    .filter(schema -> "revise_plan".equals(String.valueOf(schema.get("name"))))
+                    .toList();
+        }
         if (!state.latestPlan.isEmpty()) {
             return toolSchemas;
         }

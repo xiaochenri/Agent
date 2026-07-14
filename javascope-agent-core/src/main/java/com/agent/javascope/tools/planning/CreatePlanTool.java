@@ -4,6 +4,7 @@ import com.agent.javascope.tool.runtime.AgentToolExecutor;
 import com.agent.javascope.tool.runtime.PlanSafetyValidator;
 import com.agent.javascope.tool.contract.ToolOutputContractInspector;
 import com.agent.javascope.tool.contract.PlanToolReferenceInspector;
+import com.agent.javascope.tool.contract.PlanToolInputContractInspector;
 import com.agent.javascope.contract.plan.PlanStepDefinition;
 import com.agent.javascope.entity.plan.PlanToolData;
 import com.agent.javascope.entity.tool.ToolResultPayload;
@@ -146,6 +147,8 @@ public class CreatePlanTool {
                 } else if (!toolDefinition.isAllowedInPlanStep()) {
                     errors.add("plan[" + i + "].tool 不允许作为计划步骤: " + step.getTool());
                 } else {
+                    errors.addAll(PlanToolInputContractInspector.validate(
+                            toolDefinition, step.getInput(), "plan[" + i + "]"));
                     errors.addAll(ToolOutputContractInspector.validate(
                             toolDefinition, step.getRequiredOutputs(), "plan[" + i + "]"));
                 }

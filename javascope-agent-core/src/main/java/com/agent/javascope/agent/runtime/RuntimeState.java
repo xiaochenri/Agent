@@ -81,6 +81,8 @@ public final class RuntimeState {
     public Map<String, Object> clarificationData = new LinkedHashMap<>();
     // 计划步骤已经全部完成，下一阶段只能做最终答案合成。
     public boolean planExecutionCompleted = false;
+    // 计划出现失败或依赖阻塞后进入恢复门禁：只能 revise_plan 或直接输出保守 final_answer。
+    public boolean planRecoveryRequired = false;
     // 最终合成阶段不再向模型暴露工具，形成执行层硬约束。
     public boolean finalSynthesisStage = false;
 }

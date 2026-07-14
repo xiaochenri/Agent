@@ -58,6 +58,9 @@ public class PlanExecutor {
             return false;
         }
         List<String> failureReasons = new ArrayList<>();
+        List<String> toolExecutionFailureReasons = new ArrayList<>();
+        List<String> outcomeFailureReasons = new ArrayList<>();
+        List<String> preExecutionFailureReasons = new ArrayList<>();
         for (int i = 0; i < state.planSteps.size(); i++) {
             PlanStepState step = state.planSteps.get(i);
             if (step.getStatus() == PlanStepStatus.COMPLETED) {
@@ -75,6 +78,7 @@ public class PlanExecutor {
                 String reason = "前置步骤未完成，不能继续执行: " + step.getStepId();
                 recordPreExecutionFailure(state, i, step, reason, "plan_dependency_blocked_" + step.getStepId());
                 failureReasons.add(reason);
+                preExecutionFailureReasons.add(reason);
                 continue;
             }
             List<String> incompleteDependencies = incompleteDependencies(state.planSteps, step.getDependsOnStepIds());
@@ -82,6 +86,7 @@ public class PlanExecutor {
                 String reason = "显式前置步骤未完成，不能继续执行: " + String.join(",", incompleteDependencies);
                 recordPreExecutionFailure(state, i, step, reason, "plan_dependencies_blocked_" + step.getStepId());
                 failureReasons.add(reason);
+                preExecutionFailureReasons.add(reason);
                 continue;
             }
             String toolName = step.getToolName();
@@ -89,6 +94,7 @@ public class PlanExecutor {
                 String reason = "计划步骤缺少 tool: step=" + i;
                 recordPreExecutionFailure(state, i, step, reason, "plan_step_tool_missing_" + i);
                 failureReasons.add(reason);
+                preExecutionFailureReasons.add(reason);
                 continue;
             }
             AgentToolDefinition toolDefinition = toolExecutor.getToolDefinition(toolName);
@@ -96,12 +102,14 @@ public class PlanExecutor {
                 String reason = "计划步骤使用了未注册工具: " + toolName;
                 recordPreExecutionFailure(state, i, step, reason, "plan_step_tool_unknown_" + i);
                 failureReasons.add(reason);
+                preExecutionFailureReasons.add(reason);
                 continue;
             }
             if (!toolDefinition.isAllowedInPlanStep()) {
                 String reason = "工具 " + toolName + " 不允许作为计划执行步骤";
                 recordPreExecutionFailure(state, i, step, reason, "plan_step_tool_not_allowed_" + toolName);
                 failureReasons.add(reason);
+                preExecutionFailureReasons.add(reason);
                 continue;
             }
             step.setStatus(PlanStepStatus.IN_PROGRESS);
@@ -146,12 +154,13 @@ public class PlanExecutor {
                         "actual_output", resultJson));
                 shouldSkipFailedStep(state, i, step, reason);
                 failureReasons.add(reason);
+                toolExecutionFailureReasons.add(reason);
                 continue;
             }
             StepValidatorTool.StepEvaluationResult evaluation = stepValidatorTool.evaluateStepOutcome(step, resultJson);
-            state.lastStepEvaluation = evaluation;
             state.executionLog.add(stepValidatorTool.buildStepValidationLog(round, step, evaluation));
             if (!evaluation.passed()) {
+                state.lastStepEvaluation = evaluation;
                 step.setStatus(PlanStepStatus.FAILED);
                 step.setActualOutput(resultJson);
                 rememberFailedStep(state, step, resultJson, "结果未达预期");
@@ -177,7 +186,13 @@ public class PlanExecutor {
                         "actual_output", resultJson));
                 shouldSkipFailedStep(state, i, step, detailedReason);
                 failureReasons.add(detailedReason);
+                outcomeFailureReasons.add(detailedReason);
                 continue;
+            }
+            // 独立步骤成功不能覆盖本轮已经记录的失败上下文；revise_plan 必须同时看到
+            // 与 lastFailedStepIndex 对应的失败评价，而不是最后一个成功步骤的评价。
+            if (state.lastFailedStepIndex < 0) {
+                state.lastStepEvaluation = evaluation;
             }
             step.setStatus(PlanStepStatus.COMPLETED);
             step.setActualOutput(resultJson);
@@ -190,17 +205,37 @@ public class PlanExecutor {
                     "actual_output", resultJson));
         }
         if (!failureReasons.isEmpty()) {
-            state.validationFeedback = failureReasons.get(failureReasons.size() - 1)
-                    + "。其他不依赖失败步骤的计划步骤已继续执行；请调用 revise_plan 补齐失败部分。";
+            state.planRecoveryRequired = true;
+            state.riskFlags.add("plan_recovery_required");
+            String primaryFailureReason = firstAvailableFailureReason(
+                    toolExecutionFailureReasons, outcomeFailureReasons, preExecutionFailureReasons);
+            state.validationFeedback = primaryFailureReason
+                    + "。其他不依赖失败步骤的计划步骤已继续执行；"
+                    + "下一步只能调用 revise_plan 补齐失败部分，或直接输出基于现有证据的保守 final_answer。";
             state.ephemeralMemory.add(buildPlanExecutionSummary(state));
             return false;
         }
+        state.planRecoveryRequired = false;
+        state.riskFlags.removeIf("plan_recovery_required"::equals);
         state.lastFailedStepIndex = -1;
         state.lastFailedPlanFingerprint = "";
         state.lastStepEvaluation = stepValidatorTool.buildPassResult(1.0, new LinkedHashMap<>());
         state.planLifecycle.add(Map.of("event", PlanLifecycleEvent.PLAN_COMPLETED.value(), "plan_id", state.currentPlanId));
         state.ephemeralMemory.add(buildPlanExecutionSummary(state));
         return true;
+    }
+
+    private String firstAvailableFailureReason(
+            List<String> toolExecutionFailures,
+            List<String> outcomeFailures,
+            List<String> preExecutionFailures) {
+        for (List<String> reasons : List.of(
+                toolExecutionFailures, outcomeFailures, preExecutionFailures)) {
+            if (!reasons.isEmpty()) {
+                return reasons.get(0);
+            }
+        }
+        return "计划执行失败";
     }
 
     /**
@@ -232,9 +267,12 @@ public class PlanExecutor {
         step.setStatus(PlanStepStatus.FAILED);
         step.setActualOutput(failure);
         rememberFailedStep(state, step, failure, reason);
-        state.lastStepEvaluation = stepValidatorTool.buildToolExecutionFailedResult(failure);
-        state.lastFailedStepIndex = stepIndex;
-        state.lastFailedPlanFingerprint = fingerprintPlan(buildPlanAtIndex(state.latestPlan, stepIndex));
+        // 保留最先发生的根失败；后续依赖阻塞不能覆盖恢复上下文。
+        if (state.lastFailedStepIndex < 0) {
+            state.lastStepEvaluation = stepValidatorTool.buildToolExecutionFailedResult(failure);
+            state.lastFailedStepIndex = stepIndex;
+            state.lastFailedPlanFingerprint = fingerprintPlan(buildPlanAtIndex(state.latestPlan, stepIndex));
+        }
         state.riskFlags.add(riskFlag);
         state.planLifecycle.add(Map.of(
                 "event", PlanLifecycleEvent.STEP_FAILED.value(),
