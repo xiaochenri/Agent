@@ -192,14 +192,17 @@ public class ReflectiveAgentToolExecutor implements ToolRegistry, ToolInvoker, S
         definition.setAllowedDirectCall(annotation.allowedDirectCall());
         definition.setAllowedInPlanStep(annotation.allowedInPlanStep());
         definition.setTimeoutMs(annotation.timeoutMs());
-        definition.setInputSchema(resolveSchema(annotation.inputSchema(), inferInputSchema(method)));
-        definition.setOutputSchema(resolveSchema(annotation.outputSchema(), defaultOutputSchema()));
+        definition.setInputSchema(resolveSchema(
+                annotation.name(), "input_schema", annotation.inputSchema(), inferInputSchema(method)));
+        definition.setOutputSchema(resolveSchema(
+                annotation.name(), "output_schema", annotation.outputSchema(), defaultOutputSchema()));
         definition.setStrictOutputContract(annotation.outputSchema() != null && !annotation.outputSchema().isBlank());
         definition.setExamples(parseExamples(annotation.examples()));
         return definition;
     }
 
-    private Map<String, Object> resolveSchema(String schemaJson, Map<String, Object> fallback) {
+    private Map<String, Object> resolveSchema(
+            String toolName, String schemaType, String schemaJson, Map<String, Object> fallback) {
         if (schemaJson == null || schemaJson.isBlank()) {
             LOG.debug("Using inferred schema because no explicit tool schema was supplied");
             return fallback;
@@ -207,10 +210,11 @@ public class ReflectiveAgentToolExecutor implements ToolRegistry, ToolInvoker, S
         try {
             return OBJECT_MAPPER.readValue(schemaJson, new TypeReference<Map<String, Object>>() {});
         } catch (JsonProcessingException e) {
-            LOG.warn("Unable to parse explicit agent tool schema; using inferred schema instead, error={}", e.getOriginalMessage());
-            Map<String, Object> invalid = new LinkedHashMap<>(fallback);
-            invalid.put("schema_parse_error", e.getOriginalMessage());
-            return invalid;
+            // 显式契约写错时必须启动失败，不能把 Map 入参静默降级成无 required 字段的空 Schema。
+            throw new IllegalStateException(
+                    "Invalid explicit " + schemaType + " for tool " + toolName + ": "
+                            + e.getOriginalMessage(),
+                    e);
         }
     }
 

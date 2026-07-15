@@ -1,6 +1,7 @@
 package com.agent.javascope.context.projection;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import java.util.Objects;
 
 /** Core 向上下文模块提供的通用状态快照。 */
@@ -13,6 +14,8 @@ public record ContextRequest(
         JsonNode ephemeralMemory,
         /** 业务工具上报的通用决策状态，应优先于普通历史日志展示。 */
         JsonNode businessDecisions,
+        /** ReAct 最近一次可审计调查状态，由 Action Model 更新并在轮次间持续传递。 */
+        JsonNode investigationState,
         /** 最近一次校验或执行失败生成的修正约束。 */
         String validationFeedback,
         /** 当前执行过程中累积的风险标记。 */
@@ -24,7 +27,20 @@ public record ContextRequest(
         Objects.requireNonNull(executionLog, "executionLog must not be null");
         Objects.requireNonNull(ephemeralMemory, "ephemeralMemory must not be null");
         Objects.requireNonNull(businessDecisions, "businessDecisions must not be null");
+        Objects.requireNonNull(investigationState, "investigationState must not be null");
         validationFeedback = validationFeedback == null ? "" : validationFeedback;
         Objects.requireNonNull(riskFlags, "riskFlags must not be null");
+    }
+
+    /** 兼容未提供 ReAct 调查状态的既有上下文调用方。 */
+    public ContextRequest(
+            JsonNode currentPlan,
+            JsonNode executionLog,
+            JsonNode ephemeralMemory,
+            JsonNode businessDecisions,
+            String validationFeedback,
+            JsonNode riskFlags) {
+        this(currentPlan, executionLog, ephemeralMemory, businessDecisions,
+                JsonNodeFactory.instance.objectNode(), validationFeedback, riskFlags);
     }
 }

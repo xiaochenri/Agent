@@ -20,23 +20,41 @@ public class AgentToolCallExtractor {
     }
 
     /**
-     * 读取响应里的 tool_calls 字段；字段缺失、类型不对或工具名为空时直接忽略。
+     * direct/react 优先读取单动作协议 selected_action.tool_call；
+     * planned 和旧模型响应继续兼容 tool_calls 数组。
      */
     public List<AgentToolCall> extract(Map<String, Object> response) {
+        Map<String, Object> selectedAction = json.asMap(response.get("selected_action"));
+        String actionType = selectedAction.get("type") instanceof String type ? type.trim() : "";
+        if ("tool_call".equals(actionType)) {
+            AgentToolCall call = toToolCall(json.asMap(selectedAction.get("tool_call")));
+            return call == null ? List.of() : List.of(call);
+        }
+        if ("final_answer".equals(actionType)) {
+            return List.of();
+        }
+
         List<AgentToolCall> result = new ArrayList<>();
         Object toolCallsObj = response.get("tool_calls");
         if (!(toolCallsObj instanceof List<?> list)) {
             return result;
         }
         for (Object item : list) {
-            Map<String, Object> call = json.asMap(item);
-            if (json.normalize((String) call.get("name"), "").isEmpty()) {
-                continue;
-            }
-            result.add(new AgentToolCall(
-                    json.normalize((String) call.get("name"), ""),
-                    json.asMap(call.get("input"))));
+            AgentToolCall call = toToolCall(json.asMap(item));
+            if (call != null) result.add(call);
         }
         return result;
+    }
+
+    public boolean usesSingleActionProtocol(Map<String, Object> response) {
+        Map<String, Object> selectedAction = json.asMap(response == null ? null : response.get("selected_action"));
+        return "tool_call".equals(selectedAction.get("type"))
+                || "final_answer".equals(selectedAction.get("type"));
+    }
+
+    private AgentToolCall toToolCall(Map<String, Object> call) {
+        String name = call.get("name") instanceof String text ? json.normalize(text, "") : "";
+        if (name.isEmpty()) return null;
+        return new AgentToolCall(name, json.asMap(call.get("input")));
     }
 }

@@ -6,6 +6,7 @@ import com.agent.javascope.json.AgentJsonCodecUtil;
 import com.agent.javascope.prompt.AgentPromptProvider;
 
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /** 统一渲染工作上下文，并在超出字符预算时裁剪低优先级历史。 */
@@ -26,11 +27,15 @@ public class DefaultPromptAssembler implements PromptAssembler {
             List<Map<String, Object>> toolSchemas,
             WorkingContext context,
             PromptBudget budget) {
+        Map<String, Object> evidenceContext = new LinkedHashMap<>();
+        evidenceContext.put("investigation_state", context.investigationState());
+        evidenceContext.put("latest_tool_observations", context.latestObservations());
+        evidenceContext.put("evidence_summaries", context.evidenceSummaries());
         String prompt = promptProvider.buildActionPrompt(
                 systemInstruction,
                 input,
                 executionMode,
-                json.toJson(context.evidenceSummaries()),
+                json.toJson(evidenceContext),
                 json.toJson(toolSchemas),
                 json.toJson(context.currentPlan()),
                 json.toJson(context.relevantHistory()),

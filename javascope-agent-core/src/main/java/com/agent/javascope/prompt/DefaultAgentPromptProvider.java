@@ -20,15 +20,15 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                 - chat：寒暄闲聊、情绪表达、无需任务执行的轻对话
                 - meta：询问你是谁、你能做什么、如何使用、能力边界、流程说明
                 - task：需要分析、查询、推荐、执行、检索、规划等任务处理
-                - task/direct：对象明确，创建计划前就能确定只需一个事实工具调用
+                - task/direct：用户目标单一，无需预先规划，也不需要根据业务证据探索下一步；工具失败后允许围绕同一目标进行有限替代或降级
                 - task/planned：完整工具路径可在执行前确定；计划中的每一步都能预先指定 tool、input 和依赖，适合固定计算、转换、查询链及强调审计的流程
-                - task/react：目标明确，但下一工具取决于上一工具的观察结果，无法在执行前可靠确定完整 tool+input 链；适合原因调查、异常诊断、证据核验和自适应检索
+                - task/react：下一步业务动作取决于上一步得到的内容，需要动态调查或改变策略，无法在执行前可靠确定完整 tool+input 链；适合原因调查、异常诊断、证据核验和自适应检索
                 - 多步骤不自动等于 planned；如果工具顺序必须根据中间结果调整，必须选择 react
                 - 分析、推荐或多源证据任务只有在完整工具链可以预先确定时才选择 planned，否则选择 react
                 - chat/meta 的 execution_mode 必须为 none
                 - 不确定时优先输出 task
                 判定示例：
-                - “查询某个已知资源的单一属性” => task/direct
+                - “查询某个已知资源的单一属性或指定期间数据” => task/direct
                 - “读取指定数据源、提取字段并完成派生计算” => task/planned
                 - “调查某个异常现象的原因” => task/react
                 - “核验一条待证信息是否可信” => task/react
@@ -87,6 +87,11 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
         String modeRules = clarificationResponsePhase
                 ? ""
                 : actionModeRules(executionMode, hasPlan, clarificationAvailable, planRecoveryRequired);
+        boolean singleActionMode = "direct".equals(executionMode) || "react".equals(executionMode);
+        String responseContract = actionResponseContract(executionMode);
+        String decisionRule = "react".equals(executionMode)
+                ? "- decision_summary 是简洁、可审计的决策记录，不是完整思维过程；不得写空泛的固定分析步骤\n"
+                : "";
         String clarificationRules = clarificationAvailable && !clarificationResponsePhase ? """
                 - clarify_requirement 只处理无法从上下文、惯例或安全默认中消解的业务语义或授权问题
                 - 参数抽取、格式/编码/schema 适配、工具失败、证据不足和能力限制不属于需求澄清
@@ -95,30 +100,29 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                 """ : "";
         return """
                 你是系统级任务控制器。仅输出 JSON：
-                {
-                  "tool_calls": [{"name":"","input":{}}],
-                  "final_answer": {
-                    "core_conclusions": [],
-                    "key_evidence": [],
-                    "risk_points": [],
-                    "next_actions": []
-                  }
-                }
+                %s
                 规则：
                 - 每轮只能二选一：调用“可用工具”，或输出 final_answer；不得同时输出
+                %s
                 - 工具名称和输入必须符合 input_schema；只能引用 output_schema 声明且校验成功的输出字段
                 - 若当前输入实际不需要任务执行，直接面向用户回答，不调用工具
                 - 优先遵守“当前约束与校验反馈”；最终结论必须可追溯到相关执行历史
+                %s
                 当前执行模式：%s
                 %s%s
                 系统提示：%s
                 用户问题：%s
-                证据摘要：%s
+                关键证据与最新工具观察：%s
                 可用工具：%s
                 最新计划：%s
                 相关执行历史：%s
                 当前约束与校验反馈：%s
                 """.formatted(
+                        responseContract,
+                        singleActionMode
+                                ? "- direct/react 必须使用 selected_action 单动作协议；type=tool_call 时只能包含一个 tool_call，type=final_answer 时不得调用工具"
+                                : "- planned 保持 tool_calls 控制动作协议；计划内多步骤由 create_plan/revise_plan 的 plan 载荷表达",
+                        decisionRule,
                         executionMode,
                         modeRules,
                         clarificationRules,
@@ -131,14 +135,72 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                         validationFeedback);
     }
 
+    private String actionResponseContract(String executionMode) {
+        String finalAnswer = """
+                "final_answer": {
+                  "core_conclusions": [],
+                  "key_evidence": [],
+                  "risk_points": [],
+                  "next_actions": []
+                }
+                """;
+        if ("react".equals(executionMode)) {
+            return """
+                    {
+                      "decision_summary": {
+                        "current_question": "当前唯一调查问题",
+                        "hypothesis_updates": [],
+                        "next_information_needed": {"gap":"当前唯一信息缺口"},
+                        "action_reason": "为什么当前动作最有信息增益",
+                        "expected_information_gain": "该动作可能支持、反驳或区分什么",
+                        "stop_reason": "继续调查或结束的依据"
+                      },
+                      "selected_action": {
+                        "type": "tool_call|final_answer",
+                        "tool_call": {"name":"","input":{}}
+                      },
+                      %s
+                    }
+                    """.formatted(finalAnswer);
+        }
+        if ("direct".equals(executionMode)) {
+            return """
+                    {
+                      "selected_action": {
+                        "type": "tool_call|final_answer",
+                        "tool_call": {"name":"","input":{}}
+                      },
+                      %s
+                    }
+                    """.formatted(finalAnswer);
+        }
+        return """
+                {
+                  "tool_calls": [{"name":"","input":{}}],
+                  %s
+                }
+                """.formatted(finalAnswer);
+    }
+
     private String actionModeRules(
             String executionMode,
             boolean hasPlan,
             boolean clarificationAvailable,
             boolean planRecoveryRequired) {
         return switch (executionMode == null ? "" : executionMode) {
-            case "direct" -> "- direct：最多调用一个完成已知事实查询所需的工具；证据不足时给出保守结论和局限。\n";
-            case "react" -> "- react：每轮根据已有观察选择一个信息增益最大的未重复工具；证据足够时立即回答，不预先执行固定工具链。\n";
+            case "direct" -> "- direct：围绕单一目标直接执行，不预先规划，也不根据成功的业务证据扩展调查方向；工具失败后可为同一目标选择有限的替代或降级，获得可用结果后立即回答。\n";
+            case "react" -> """
+                    - react：下一步业务动作由上一轮观察内容决定；每轮必须填写 decision_summary
+                    - next_information_needed 必须是只含一个 gap 的对象；一轮只解决一个当前信息缺口
+                    - latest_tool_observations 是运行时提供的权威工具事实；不要在 decision_summary 中自行复述 latest_observation
+                    - hypothesis_updates 只输出本轮新增或状态发生变化的假设；没有变化时必须返回空数组，不得重复完整假设列表
+                    - 每个 hypothesis_update 必须包含 update_reason、evidence_strength、directly_relevant 和 evidence_refs
+                    - evidence_refs 必须直接复制 latest_tool_observations 中的 source_step，不得自行拼接工具名和轮次
+                    - 只有与假设直接相关的证据才能把状态改为 supported/weakened；间接或缺失证据必须保持 unverified
+                    - 只有新工具的结果可能改变结论、区分候选解释或解决关键反证时才调用；不得为了覆盖固定维度而依次遍历工具
+                    - action_reason 必须针对当前证据缺口，expected_information_gain 必须说明结果将如何改变判断
+                    - 若没有能显著改变判断的新动作，应填写 stop_reason 并直接输出保守 final_answer
+                    """;
             case "planned" -> planRecoveryRequired
                     ? "- planned 恢复：只能调用 revise_plan；不得重用失败工具入参，即使结果标记 retryable=true；若无有效替代则输出保守 final_answer。\n"
                     : hasPlan

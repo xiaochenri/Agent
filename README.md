@@ -52,11 +52,11 @@
    - `chat`: 闲聊，直接回复
    - `meta`: 身份、能力、使用方式等元问题，直接回复
    - `task`: 股票分析、查询、推荐、检索、规划等任务，进入 ReAct 工具链
-3. 任务分支由 `ReActAgent` 按 direct/planned/react 各自的轮次预算循环：
+3. 任务分支由 `ReActAgent` 按 direct/planned/react 共用的固定 10 轮上限循环：
    - 模型输出 `tool_calls` 或 `final_answer`
    - 需要工具时由 `ToolCallDispatcher` 执行
-   - `direct` 只执行一个提前可确定的事实工具调用
-   - `react` 不创建计划，每轮根据已有工具观察动态选择下一业务工具
+   - `direct` 面向单一用户目标，无需预先规划，也不根据业务证据探索下一步；工具失败后允许围绕同一目标进行有限替代或降级
+   - `react` 不创建计划，下一步业务动作取决于上一工具返回的内容，需要动态调查或改变策略
    - `planned` 第一轮由模型在 `clarify_requirement` 和 `create_plan` 之间二选一；信息完整时创建固定的 `tool + input` 步骤链
    - planned 步骤失败、依赖阻塞或校验建议重规划时调用 `revise_plan`
    - 缺少完成目标必需且无法安全消解的业务语义时调用 `clarify_requirement`，并等待用户补充；参数格式、schema 和工具适配问题不属于需求澄清
@@ -100,6 +100,7 @@ ToolRegistry -> ToolAuthorizationPolicy -> ToolMiddlewareChain -> ToolInvoker
 - 调用后：无论结果来自业务方法、中间件还是缓存，统一校验完整工具 Envelope 和 data 输出结构。
 - 业务语义：业务模块通过 `ToolSemanticValidator` 校验 JSON Schema 无法表达的跨字段关系，例如财报期间与报告类型一致、calculation_ready 与 EPS 来源一致、PE 必须等于 price/EPS。
 - 计划约束：`required_outputs` 和步骤 `$ref` 必须来自工具 `outputSchema`；显式强契约工具禁止规划模型发明字段。
+- 注册约束：只要显式 `inputSchema`/`outputSchema` 无法解析，应用立即启动失败，不再静默退回推断 Schema。
 
 契约失败统一返回 `tool_input_contract_violation` 或 `tool_output_contract_violation`。输出契约失败会保留原始 data 用于审计，但状态改为 failed，后续计划步骤不能继续消费。
 
@@ -107,11 +108,17 @@ ToolRegistry -> ToolAuthorizationPolicy -> ToolMiddlewareChain -> ToolInvoker
 
 | 模式 | 使用条件 | 典型任务 |
 |---|---|---|
-| `direct` | 对象明确，执行前可以确定只需一个事实工具 | 查询股票所属行业、读取指定行情 |
+| `direct` | 用户目标单一，无需预先规划，也不需要根据业务证据探索下一步；工具失败后可围绕同一目标有限替代或降级 | 查询股票所属行业、读取指定行情、查询指定期间财报 |
 | `planned` | 执行前可以确定完整步骤链，并为每一步指定 `tool + input + dependency` | 固定指标计算、确定性数据转换、强调审计的查询链 |
-| `react` | 目标明确，但下一工具依赖上一观察，无法预先可靠确定完整工具链 | 下跌原因调查、异常诊断、证据核验、自适应检索 |
+| `react` | 下一步业务动作取决于上一步得到的内容，需要动态调查或改变策略，无法预先可靠确定完整工具链 | 下跌原因调查、异常诊断、证据核验、自适应检索 |
 
-“多步骤”不自动等于 `planned`。判断边界是：如果第一次工具调用之前就能可靠写出完整可执行工具链，使用 `planned`；如果工具顺序必须随中间证据调整，使用 `react`。planned 首轮只暴露 `clarify_requirement` 与 `create_plan` 并要求二选一，react/direct 则从工具列表和运行时两层屏蔽 `create_plan`、`revise_plan`。
+“发生多次工具调用”不自动等于 `react` 或 `planned`。direct 可以在主工具失败后围绕同一目标进行有限替代或降级，但不能根据成功返回的业务证据扩展调查方向；如果下一步业务动作必须随中间内容调整，使用 `react`；如果第一次工具调用之前就能可靠写出完整可执行工具链，使用 `planned`。planned 首轮只暴露 `clarify_requirement` 与 `create_plan` 并要求二选一，react/direct 则从工具列表和运行时两层屏蔽 `create_plan`、`revise_plan`。
+
+direct/react 使用 `selected_action` 单动作协议，每轮只能选择一个 `tool_call` 或 `final_answer`；planned 继续使用控制动作和计划步骤协议。react 每轮同时输出简洁的 `decision_summary`，记录当前调查问题、候选解释增量、唯一信息缺口、动作依据和预期信息增益。运行时将其合并为 `investigation_state` 并传入下一轮；工具观察由运行时单独提供。新工具只有在可能改变判断、区分候选解释或解决关键反证时才应调用，避免按工具类别进行固定巡检。该结构是可审计决策摘要，不要求或保存模型的完整思维过程。
+
+react 的 `hypothesis_updates` 只返回本轮新增或实际发生变化的假设，没有变化时返回空数组；运行时把增量合并进持久化的 `hypotheses`。每次更新必须声明 `update_reason`、`evidence_strength`、`directly_relevant` 和 `evidence_refs`。只有直接相关且具有实际引用的证据可以把假设改为 `supported` 或 `weakened`；间接证据和未获得的证据只能保持 `unverified`。工具事实统一来自运行时生成的 `latest_tool_observations`，模型不再维护一份重复的 `latest_observation`。`next_information_needed` 只能包含一个 `gap`，确保一轮只解决一个调查问题。
+
+direct、planned 和 react 共用固定的 10 轮 Action/Observation 循环；被协议校验、重复动作或运行时门禁拒绝的动作同样消耗当前轮次。
 
 执行层通过 `ExecutionStrategy` 抽象扩展。`ReActAgent` 统一创建 Trace、执行路由并选择策略：chat/meta 由 `DirectReplyExecutionStrategy` 回复；task/direct 和 task/react 由 `ReActExecutionStrategy` 执行；task/planned 由 `PlanReActExecutionStrategy` 执行。两个任务策略共用一套 Action/Observation 循环，差异仅在路由条件、可见工具和 Prompt 约束，避免形成嵌套 ReAct 内核。
 
@@ -205,11 +212,7 @@ export AGENT_RUNTIME_FINAL_ANSWER_VALIDATION_ENABLED=false
 - `java.agent-runtime.api-key`: 模型 API Key
 - `java.agent-runtime.base-url`: OpenAI 兼容 Chat Completions 地址
 - `java.agent-runtime.system-instruction`: 基础系统提示词
-- `java.agent-runtime.max-rounds`: 未知模式及旧配置的兼容轮次上限
-- `java.agent-runtime.direct-max-rounds`: direct 决策轮次，默认 2
-- `java.agent-runtime.planned-max-rounds`: planned 决策轮次，默认 4；计划内部步骤不占模型决策轮次
-- `java.agent-runtime.react-max-rounds`: react 决策轮次，默认 6
-- `java.agent-runtime.react-max-tool-calls`: react 工具动作上限，默认 5
+- direct、planned 和 react 的 Action/Observation 循环固定最多执行 10 轮，不提供额外轮次配置
 - 最终合成始终额外保留 1 次模型调用，且禁止继续调用工具
 - `java.agent-runtime.plan-max-retry`: 规划 JSON 重试次数
 - `java.agent-runtime.tool-max-retries`: `retryable=true` 工具的自动重试次数，默认 `0`；计划失败后进入 `revise_plan`/保守结束门禁

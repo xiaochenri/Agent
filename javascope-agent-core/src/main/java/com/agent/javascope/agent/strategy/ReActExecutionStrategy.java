@@ -16,8 +16,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 动态 ReAct 策略：不创建固定计划，每轮根据已有工具观察选择下一动作。
- * direct 复用同一内核，但由 Prompt 将其限制为一次明确的事实工具调用。
+ * direct/react 共用的无计划执行策略。
+ * direct 围绕单一目标直接执行，工具失败后允许有限替代或降级；react 根据业务观察动态调查或改变策略。
  */
 public class ReActExecutionStrategy extends AbstractToolLoopExecutionStrategy {
 

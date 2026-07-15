@@ -3,7 +3,7 @@ package com.agent.javascope.entity.routing;
 public class RouteDecision {
 
     private String route = "task";
-    /** task 执行策略：direct 单步直达，react 动态探索，planned 固定可执行计划。 */
+    /** task 执行策略：direct 单目标无计划执行，react 观察驱动的动态调查，planned 固定可执行计划。 */
     private String executionMode = "planned";
     private double confidence = 0.5;
     private String reason = "";

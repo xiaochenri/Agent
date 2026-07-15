@@ -1,6 +1,7 @@
 package com.agent.javascope.context.projection;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 
 /** 供模型决策的通用上下文投影，不绑定 ReAct、计划或业务领域类型。 */
 public record WorkingContext(
@@ -11,4 +12,30 @@ public record WorkingContext(
         /** 本轮必须遵守的失败反馈、短期记忆和风险约束。 */
         JsonNode activeConstraints,
         /** 从相关历史中提取的轻量证据索引或摘要。 */
-        JsonNode evidenceSummaries) {}
+        JsonNode evidenceSummaries,
+        /** 每个已调用工具最近一次结果的结构化摘要，避免关键观察被普通历史挤出窗口。 */
+        JsonNode latestObservations,
+        /** ReAct 当前调查问题、假设变化、信息缺口及动作依据。 */
+        JsonNode investigationState) {
+
+    /** 兼容尚未传入调查状态的上下文管理器。 */
+    public WorkingContext(
+            JsonNode currentPlan,
+            JsonNode relevantHistory,
+            JsonNode activeConstraints,
+            JsonNode evidenceSummaries,
+            JsonNode latestObservations) {
+        this(currentPlan, relevantHistory, activeConstraints, evidenceSummaries,
+                latestObservations, JsonNodeFactory.instance.objectNode());
+    }
+
+    /** 兼容最初仅提供历史、约束和证据摘要的上下文管理器。 */
+    public WorkingContext(
+            JsonNode currentPlan,
+            JsonNode relevantHistory,
+            JsonNode activeConstraints,
+            JsonNode evidenceSummaries) {
+        this(currentPlan, relevantHistory, activeConstraints, evidenceSummaries,
+                JsonNodeFactory.instance.arrayNode(), JsonNodeFactory.instance.objectNode());
+    }
+}

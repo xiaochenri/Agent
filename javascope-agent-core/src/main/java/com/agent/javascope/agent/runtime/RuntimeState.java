@@ -34,6 +34,8 @@ public final class RuntimeState {
     public final List<String> ephemeralMemory = new ArrayList<>();
     // 业务工具上报的通用决策状态：作为下一轮推理的高优先级上下文，不负责强制终止推理。
     public final List<Map<String, Object>> businessDecisions = new ArrayList<>();
+    // ReAct 最近一次结构化调查状态：记录当前问题、假设更新、信息缺口和下一动作依据。
+    public final Map<String, Object> investigationState = new LinkedHashMap<>();
     // direct/react 已执行动作指纹（tool+input）；用于保证逐轮观察并阻止模型重复相同动作。
     public final Set<String> observedActionFingerprints = new java.util.LinkedHashSet<>();
     // 当前可执行计划的结构化步骤列表，供 executePlan 顺序执行与依赖校验。

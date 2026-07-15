@@ -25,7 +25,9 @@ import java.util.Map;
  */
 public class FinalAnswerSynthesizer {
 
-    /** 控制最终答案验证开关和最大轮次。 */
+    private static final int FINAL_SYNTHESIS_ROUND = 11;
+
+    /** 控制最终答案验证开关。 */
     private final AgentRuntimeProperties properties;
     /** JSON 解析、转换和摘要输出辅助工具。 */
     private final AgentJsonCodecUtil json;
@@ -124,16 +126,15 @@ public class FinalAnswerSynthesizer {
                     + "必须区分工具能力与执行策略：retryable=true 不能表述为工具不可重试，"
                     + "只能说明当前策略未重试或未形成有效替代计划。";
         } else if ("react".equals(executionMode)) {
-            state.validationFeedback = "ReAct 推理轮次已耗尽。请仅基于已有观察输出保守的 final_answer，"
+            state.validationFeedback = "ReAct 正常决策轮次已耗尽。请仅基于已有观察输出保守的 final_answer，"
                     + "明确证据、局限和后续建议，不要继续调用工具。";
         } else {
             state.validationFeedback = "推理轮次已耗尽或计划尚未完成。请仅基于已有执行日志输出保守的 final_answer，"
                     + "明确证据、局限和后续建议，不要继续调用工具。";
         }
-        int finalSynthesisRound = properties.resolveMaxRounds(executionMode) + 1;
         // 最终合成是硬状态：reasoning 会看到空工具列表，不再依赖提示词劝模型停止调用工具。
         state.finalSynthesisStage = true;
-        state.lastResponse = reasoningCallback.reason(finalSynthesisRound);
+        state.lastResponse = reasoningCallback.reason(FINAL_SYNTHESIS_ROUND);
         List<AgentToolCall> toolCalls = toolCallExtractor.extract(state.lastResponse);
         if (!toolCalls.isEmpty()) {
             state.riskFlags.add("final_synthesis_tool_call_unexpected");
@@ -145,7 +146,7 @@ public class FinalAnswerSynthesizer {
         }
         state.lastValidation = validateFinalAnswer(input, state.latestPlan, state.executionLog, state.lastFinalAnswer);
         if (!state.lastValidation.passed()) {
-            handleValidationFailure(finalSynthesisRound, state);
+            handleValidationFailure(FINAL_SYNTHESIS_ROUND, state);
             return false;
         }
         return true;

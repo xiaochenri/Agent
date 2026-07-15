@@ -14,6 +14,7 @@ import com.agent.javascope.context.projection.ContextRequest;
 import com.agent.javascope.context.projection.WorkingContext;
 import com.agent.javascope.context.trace.ExecutionEventType;
 import com.agent.javascope.context.trace.ExecutionLogStore;
+import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
 import com.agent.javascope.entity.execution.AgentToolCall;
 import com.agent.javascope.json.AgentJsonCodecUtil;
 import com.agent.javascope.model.AgentChatModelClient;
@@ -33,6 +34,8 @@ import java.util.function.Consumer;
  * 子类只定义路由支持范围和当前模式可见的工具，避免为不同模式复制一套 ReAct 内核。
  */
 abstract class AbstractToolLoopExecutionStrategy extends Agent implements ExecutionStrategy {
+
+    private static final int MAX_TOOL_LOOP_ROUNDS = 10;
 
     private final ToolCallDispatcher toolCallDispatcher;
     private final FinalAnswerSynthesizer finalAnswerSynthesizer;
@@ -76,20 +79,7 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
         boolean useModelStream = request.useModelStream();
         int emittedPlanLifecycleCount = 0;
         ensureAgentInitialized();
-        String executionMode = state.routeDecision.getExecutionMode();
-        int maxRounds = properties.resolveMaxRounds(executionMode);
-        int reactMaxToolCalls = Math.max(1, properties.getReactMaxToolCalls());
-
-        for (int round = 1; round <= maxRounds; round++) {
-            if ("react".equals(executionMode)
-                    && !state.inClarificationStage
-                    && state.observedActionFingerprints.size() >= reactMaxToolCalls) {
-                state.riskFlags.add("react_tool_call_budget_exhausted");
-                state.validationFeedback = "ReAct 工具调用预算已耗尽。请基于已有观察生成保守的 final_answer，"
-                        + "不要继续调用工具。";
-                emitStreamEvent(eventConsumer, "process", "ReAct 已达到工具调用上限，正在基于已有观察生成回答");
-                break;
-            }
+        for (int round = 1; round <= MAX_TOOL_LOOP_ROUNDS; round++) {
             emitStreamEvent(eventConsumer, "process", "第 " + round + " 轮：模型分析下一步动作");
             state.lastResponse = reasoning(input, round, state, eventConsumer, useModelStream);
             List<AgentToolCall> toolCalls = toolCallExtractor.extract(state.lastResponse);
@@ -135,7 +125,7 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
 
         // 澄清恰好发生在最后一个正常轮次时，额外保留一次模型调用生成面向用户的澄清回复。
         if (state.inClarificationStage) {
-            int clarificationRound = maxRounds + 1;
+            int clarificationRound = MAX_TOOL_LOOP_ROUNDS + 1;
             state.lastResponse = reasoning(
                     input, clarificationRound, state, eventConsumer, useModelStream);
             List<AgentToolCall> unexpectedCalls = toolCallExtractor.extract(state.lastResponse);
@@ -223,6 +213,23 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
             }
             return List.of(selected);
         }
+        if (("direct".equals(mode) || "react".equals(mode))
+                && !toolCallExtractor.usesSingleActionProtocol(state.lastResponse)) {
+            state.riskFlags.add(mode + "_legacy_action_protocol_used");
+            if (toolCalls.size() > 1) {
+                state.validationFeedback = "direct/react 必须使用 selected_action 单动作协议；"
+                        + "检测到旧版多个 tool_calls，本轮兼容执行第一项并忽略其余动作。";
+            }
+        }
+        if ("react".equals(mode)) {
+            List<String> decisionErrors = validateDecisionSummary(state.lastResponse, state);
+            if (!decisionErrors.isEmpty()) {
+                state.riskFlags.add("react_decision_summary_invalid");
+                state.validationFeedback = "ReAct decision_summary 不符合调查契约："
+                        + String.join("; ", decisionErrors);
+                return List.of();
+            }
+        }
         AgentToolCall selected = toolCalls.get(0);
         if (toolCalls.size() > 1) {
             state.riskFlags.add(mode + "_multiple_actions_truncated");
@@ -237,6 +244,125 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
             return List.of();
         }
         return List.of(selected);
+    }
+
+    private List<String> validateDecisionSummary(Map<String, Object> response, RuntimeState state) {
+        List<String> errors = new java.util.ArrayList<>();
+        Map<String, Object> summary = json.asMap(response == null ? null : response.get("decision_summary"));
+        for (String field : List.of(
+                "current_question", "action_reason", "expected_information_gain")) {
+            if (!hasText(summary, field)) errors.add(field + " 不能为空");
+        }
+        Map<String, Object> informationNeed = json.asMap(summary.get("next_information_needed"));
+        if (informationNeed.size() != 1 || !hasText(informationNeed, "gap")) {
+            errors.add("next_information_needed 必须是只包含一个非空 gap 的对象");
+        }
+        Object updatesValue = summary.get("hypothesis_updates");
+        if (!(updatesValue instanceof List<?> updates)) {
+            errors.add("hypothesis_updates 必须是数组");
+            return errors;
+        }
+        Map<String, Map<String, Object>> existingHypotheses = indexedHypotheses(state.investigationState);
+        for (int i = 0; i < updates.size(); i++) {
+            Map<String, Object> update = json.asMap(updates.get(i));
+            String prefix = "hypothesis_updates[" + i + "]";
+            if (!hasText(update, "hypothesis")) errors.add(prefix + ".hypothesis 不能为空");
+            if (!hasText(update, "update_reason")) errors.add(prefix + ".update_reason 不能为空");
+            String status = update.get("status") instanceof String text ? text : "";
+            if (!List.of("supported", "weakened", "unverified").contains(status)) {
+                errors.add(prefix + ".status 非法");
+            }
+            String strength = update.get("evidence_strength") instanceof String text ? text : "";
+            if (!List.of("none", "weak", "medium", "strong").contains(strength)) {
+                errors.add(prefix + ".evidence_strength 非法");
+            }
+            Map<String, Object> previous = existingHypotheses.get(String.valueOf(update.get("hypothesis")));
+            if (previous != null && sameHypothesisState(previous, update)) {
+                errors.add(prefix + " 未产生增量变化，不应重复输出");
+            }
+            boolean directlyRelevant = json.asBoolean(update.get("directly_relevant"), false);
+            List<String> refs = json.asStringList(update.get("evidence_refs"));
+            if (!"unverified".equals(status)) {
+                if (!directlyRelevant) errors.add(prefix + " 只有 directly_relevant=true 才能改变假设状态");
+                if (refs.isEmpty()) errors.add(prefix + " 改变状态时必须提供 evidence_refs");
+                if ("none".equals(strength)) errors.add(prefix + " 改变状态时 evidence_strength 不能为 none");
+                for (String ref : refs) {
+                    if (!isKnownEvidenceReference(ref, state.executionLog)) {
+                        errors.add(prefix + " 引用了不存在的证据: " + ref);
+                    }
+                }
+            }
+        }
+        return errors;
+    }
+
+    private Map<String, Map<String, Object>> indexedHypotheses(Map<String, Object> investigationState) {
+        Map<String, Map<String, Object>> indexed = new LinkedHashMap<>();
+        Object hypothesesValue = investigationState.get("hypotheses");
+        if (!(hypothesesValue instanceof List<?>)) {
+            hypothesesValue = investigationState.get("hypothesis_updates");
+        }
+        if (hypothesesValue instanceof List<?> hypotheses) {
+            for (Object value : hypotheses) {
+                Map<String, Object> hypothesis = json.asMap(value);
+                if (hasText(hypothesis, "hypothesis")) {
+                    indexed.put(String.valueOf(hypothesis.get("hypothesis")), hypothesis);
+                }
+            }
+        }
+        return indexed;
+    }
+
+    private boolean sameHypothesisState(Map<String, Object> previous, Map<String, Object> update) {
+        for (String field : List.of(
+                "status", "update_reason", "evidence_strength", "directly_relevant", "evidence_refs")) {
+            if (!java.util.Objects.equals(previous.get(field), update.get(field))) return false;
+        }
+        return true;
+    }
+
+    private void mergeInvestigationState(Map<String, Object> summary, RuntimeState state) {
+        Map<String, Object> merged = new LinkedHashMap<>(state.investigationState);
+        merged.remove("latest_observation");
+        merged.remove("hypothesis_updates");
+        for (String field : List.of(
+                "current_question", "next_information_needed", "action_reason",
+                "expected_information_gain", "stop_reason")) {
+            if (summary.containsKey(field)) merged.put(field, summary.get(field));
+        }
+
+        Map<String, Map<String, Object>> hypotheses = indexedHypotheses(state.investigationState);
+        Object updatesValue = summary.get("hypothesis_updates");
+        if (updatesValue instanceof List<?> updates) {
+            for (Object value : updates) {
+                Map<String, Object> update = json.asMap(value);
+                if (hasText(update, "hypothesis")) {
+                    hypotheses.put(String.valueOf(update.get("hypothesis")), new LinkedHashMap<>(update));
+                }
+            }
+        }
+        merged.put("hypotheses", new java.util.ArrayList<>(hypotheses.values()));
+        state.investigationState.clear();
+        state.investigationState.putAll(merged);
+    }
+
+    private boolean isKnownEvidenceReference(String reference, List<AgentExecutionLogEntry> executionLog) {
+        if (reference == null || reference.isBlank()) return false;
+        for (AgentExecutionLogEntry entry : executionLog) {
+            String toolName = entry.getToolName();
+            String step = entry.getStep();
+            if (reference.equals(toolName)
+                    || reference.startsWith(toolName + ".")
+                    || reference.equals(step)
+                    || reference.startsWith(step + ".")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasText(Map<String, Object> source, String field) {
+        return source.get(field) instanceof String text && !text.isBlank();
     }
 
     /** 向流式页面发送结构化澄清事件，页面可区分第一轮澄清和执行中澄清。 */
@@ -276,6 +402,7 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
                 json.toTree(state.executionLog),
                 json.toTree(state.ephemeralMemory),
                 json.toTree(state.businessDecisions),
+                json.toTree(state.investigationState),
                 state.validationFeedback,
                 json.toTree(state.riskFlags)), promptBudget());
         String prompt = promptAssembler.assembleActionPrompt(
@@ -290,13 +417,21 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
                 "round", round,
                 "prompt", prompt,
                 "working_context", context), Map.of());
+        Map<String, Object> priorInvestigationState = new LinkedHashMap<>(state.investigationState);
         var rawResponse = useModelStream
                 ? chatModelStream(prompt, buildModelProgressConsumer(eventConsumer, "第 " + round + " 轮模型正在流式返回"))
                 : chatModel(prompt);
         Map<String, Object> response = json.asMap(rawResponse);
+        if ("react".equals(state.routeDecision.getExecutionMode())) {
+            Map<String, Object> decisionSummary = json.asMap(response.get("decision_summary"));
+            if (!decisionSummary.isEmpty() && validateDecisionSummary(response, state).isEmpty()) {
+                mergeInvestigationState(decisionSummary, state);
+            }
+        }
         state.trace.record(ExecutionEventType.ACTION_MODEL_RESPONDED, Map.of("round", round), response);
         state.executionLog.add(buildReasoningLog(
-                input, round, state.validationFeedback, state.businessDecisions, response));
+                input, round, state.validationFeedback, state.businessDecisions,
+                priorInvestigationState, response));
         state.lastValidationFeedback = state.validationFeedback;
         state.validationFeedback = "";
         state.ephemeralMemory.clear();

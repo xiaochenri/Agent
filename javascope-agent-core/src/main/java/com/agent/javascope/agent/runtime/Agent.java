@@ -83,6 +83,7 @@ public abstract class Agent {
             int round,
             String validationFeedback,
             List<Map<String, Object>> businessDecisions,
+            Map<String, Object> investigationState,
             Map<String, Object> response) {
         return new AgentExecutionLogEntry(
                 "reasoning_round_" + round,
@@ -90,7 +91,8 @@ public abstract class Agent {
                 Map.of(
                         "user_input", input,
                         "validation_feedback", validationFeedback,
-                        "business_decisions", List.copyOf(businessDecisions)),
+                        "business_decisions", List.copyOf(businessDecisions),
+                        "investigation_state", new java.util.LinkedHashMap<>(investigationState)),
                 response,
                 0.6);
     }
