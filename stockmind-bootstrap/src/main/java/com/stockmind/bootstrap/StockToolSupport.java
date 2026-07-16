@@ -1,5 +1,7 @@
 package com.stockmind.bootstrap;
 
+import com.agent.javascope.tool.error.DefaultToolErrorClassifier;
+import com.agent.javascope.tool.middleware.ToolResultFactory;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -77,11 +79,16 @@ abstract class StockToolSupport {
     }
 
     protected String success(String tool, Object data, String rules) {
-        return "{\"tool\":\"" + escape(tool) + "\",\"status\":\"success\",\"validation_passed\":true,\"validation_rules\":" + rules + ",\"validation_errors\":[],\"retryable\":false,\"data\":" + json(data) + "}";
+        return "{\"tool\":\"" + escape(tool) + "\",\"status\":\"success\",\"validation_passed\":true,\"validation_rules\":" + rules + ",\"validation_errors\":[],\"retryable\":false,\"error_code\":\"\",\"data\":" + json(data) + ",\"metadata\":{}}";
     }
 
-    protected String fail(String tool, String error, boolean retryable) {
-        return "{\"tool\":\"" + escape(tool) + "\",\"status\":\"failed\",\"validation_passed\":false,\"validation_rules\":[],\"validation_errors\":[\"" + escape(error) + "\"],\"retryable\":" + retryable + ",\"data\":null}";
+    protected String fail(String tool, StockToolError error) {
+        var toolError = DefaultToolErrorClassifier.INSTANCE.classify(
+                error.code(), error.publicMessage(), error.retryable());
+        return "{\"tool\":\"" + escape(tool) + "\",\"status\":\"failed\",\"validation_passed\":false,\"validation_rules\":[],\"validation_errors\":[\""
+                + escape(error.publicMessage()) + "\"],\"retryable\":" + error.retryable()
+                + ",\"error_code\":\"" + escape(error.code()) + "\",\"error\":"
+                + json(ToolResultFactory.publicError(toolError)) + ",\"data\":null,\"metadata\":{}}";
     }
 
     protected String extractSymbol(String text) {

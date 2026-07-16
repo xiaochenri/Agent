@@ -8,13 +8,14 @@ import com.agent.javascope.agent.prompt.PromptAssembler;
 import com.agent.javascope.agent.routing.AgentToolCallExtractor;
 import com.agent.javascope.agent.runtime.Agent;
 import com.agent.javascope.agent.runtime.RuntimeState;
+import com.agent.javascope.agent.runtime.ToolFailureRecord;
+import com.agent.javascope.agent.runtime.ToolFailureTracker;
 import com.agent.javascope.context.budget.PromptBudget;
 import com.agent.javascope.context.projection.ContextManager;
 import com.agent.javascope.context.projection.ContextRequest;
 import com.agent.javascope.context.projection.WorkingContext;
 import com.agent.javascope.context.trace.ExecutionEventType;
 import com.agent.javascope.context.trace.ExecutionLogStore;
-import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
 import com.agent.javascope.entity.execution.AgentToolCall;
 import com.agent.javascope.json.AgentJsonCodecUtil;
 import com.agent.javascope.model.AgentChatModelClient;
@@ -163,7 +164,9 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
                         + "本轮只执行 clarify_requirement。";
             }
             AgentToolCall clarification = clarificationCalls.get(0);
-            String fingerprint = "clarify_requirement|" + json.toJson(clarification.getInput());
+            String fingerprint = ToolFailureTracker.fingerprint(
+                    "clarify_requirement", clarification.getInput(), json);
+            if (blockActiveFailure(clarification, fingerprint, state)) return List.of();
             if (!state.observedActionFingerprints.add(fingerprint)) {
                 state.riskFlags.add("repeated_clarification_action_blocked");
                 state.validationFeedback = "相同澄清请求已经执行过；请使用已有澄清结果生成回复，"
@@ -194,17 +197,22 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
             if (state.latestPlan.isEmpty() && toolCalls.size() > 1) {
                 state.riskFlags.add("planned_initial_multiple_actions_truncated");
                 state.validationFeedback = "planned 首轮只能选择一个控制动作，本轮仅执行第一项。";
-                return List.of(toolCalls.get(0));
             }
             if (state.latestPlan.isEmpty()) {
-                return toolCalls;
+                AgentToolCall selected = toolCalls.get(0);
+                String fingerprint = ToolFailureTracker.fingerprint(
+                        selected.getName(), selected.getInput(), json);
+                if (blockActiveFailure(selected, fingerprint, state)) return List.of();
+                state.observedActionFingerprints.add(fingerprint);
+                return List.of(selected);
             }
             AgentToolCall selected = toolCalls.get(0);
             if (toolCalls.size() > 1) {
                 state.riskFlags.add("planned_multiple_actions_truncated");
                 state.validationFeedback = "计划建立后的动态修正每轮只允许一个动作；本轮仅执行第一项。";
             }
-            String fingerprint = json.normalize(selected.getName(), "") + "|" + json.toJson(selected.getInput());
+            String fingerprint = ToolFailureTracker.fingerprint(selected.getName(), selected.getInput(), json);
+            if (blockActiveFailure(selected, fingerprint, state)) return List.of();
             if (!state.observedActionFingerprints.add(fingerprint)) {
                 state.riskFlags.add("planned_repeated_action_blocked");
                 state.validationFeedback = "相同 tool+input 已在计划或后续推理中执行过；"
@@ -221,22 +229,14 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
                         + "检测到旧版多个 tool_calls，本轮兼容执行第一项并忽略其余动作。";
             }
         }
-        if ("react".equals(mode)) {
-            List<String> decisionErrors = validateDecisionSummary(state.lastResponse, state);
-            if (!decisionErrors.isEmpty()) {
-                state.riskFlags.add("react_decision_summary_invalid");
-                state.validationFeedback = "ReAct decision_summary 不符合调查契约："
-                        + String.join("; ", decisionErrors);
-                return List.of();
-            }
-        }
         AgentToolCall selected = toolCalls.get(0);
         if (toolCalls.size() > 1) {
             state.riskFlags.add(mode + "_multiple_actions_truncated");
             state.validationFeedback = "动态执行每轮只允许一个工具动作；本轮仅执行第一项，"
                     + "下一轮必须先观察其结果再决定后续动作。";
         }
-        String fingerprint = json.normalize(selected.getName(), "") + "|" + json.toJson(selected.getInput());
+        String fingerprint = ToolFailureTracker.fingerprint(selected.getName(), selected.getInput(), json);
+        if (blockActiveFailure(selected, fingerprint, state)) return List.of();
         if (!state.observedActionFingerprints.add(fingerprint)) {
             state.riskFlags.add(mode + "_repeated_action_blocked");
             state.validationFeedback = "相同 tool+input 已经执行过，请根据已有观察选择不同动作，"
@@ -246,123 +246,26 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
         return List.of(selected);
     }
 
-    private List<String> validateDecisionSummary(Map<String, Object> response, RuntimeState state) {
-        List<String> errors = new java.util.ArrayList<>();
-        Map<String, Object> summary = json.asMap(response == null ? null : response.get("decision_summary"));
-        for (String field : List.of(
-                "current_question", "action_reason", "expected_information_gain")) {
-            if (!hasText(summary, field)) errors.add(field + " 不能为空");
+    /** 在分发前阻止已失败的同参调用，以及当前已标记不可用的整个工具。 */
+    private boolean blockActiveFailure(
+            AgentToolCall call, String fingerprint, RuntimeState state) {
+        String toolName = json.normalize(call.getName(), "");
+        if (state.unavailableTools.contains(toolName)) {
+            state.riskFlags.add("unavailable_tool_call_blocked_" + toolName);
+            state.validationFeedback = "工具 " + toolName + " 当前依赖不可用；"
+                    + "不得更换参数重复调用，只能遵循 active_tool_failures.allowed_actions 恢复。";
+            return true;
         }
-        Map<String, Object> informationNeed = json.asMap(summary.get("next_information_needed"));
-        if (informationNeed.size() != 1 || !hasText(informationNeed, "gap")) {
-            errors.add("next_information_needed 必须是只包含一个非空 gap 的对象");
-        }
-        Object updatesValue = summary.get("hypothesis_updates");
-        if (!(updatesValue instanceof List<?> updates)) {
-            errors.add("hypothesis_updates 必须是数组");
-            return errors;
-        }
-        Map<String, Map<String, Object>> existingHypotheses = indexedHypotheses(state.investigationState);
-        for (int i = 0; i < updates.size(); i++) {
-            Map<String, Object> update = json.asMap(updates.get(i));
-            String prefix = "hypothesis_updates[" + i + "]";
-            if (!hasText(update, "hypothesis")) errors.add(prefix + ".hypothesis 不能为空");
-            if (!hasText(update, "update_reason")) errors.add(prefix + ".update_reason 不能为空");
-            String status = update.get("status") instanceof String text ? text : "";
-            if (!List.of("supported", "weakened", "unverified").contains(status)) {
-                errors.add(prefix + ".status 非法");
-            }
-            String strength = update.get("evidence_strength") instanceof String text ? text : "";
-            if (!List.of("none", "weak", "medium", "strong").contains(strength)) {
-                errors.add(prefix + ".evidence_strength 非法");
-            }
-            Map<String, Object> previous = existingHypotheses.get(String.valueOf(update.get("hypothesis")));
-            if (previous != null && sameHypothesisState(previous, update)) {
-                errors.add(prefix + " 未产生增量变化，不应重复输出");
-            }
-            boolean directlyRelevant = json.asBoolean(update.get("directly_relevant"), false);
-            List<String> refs = json.asStringList(update.get("evidence_refs"));
-            if (!"unverified".equals(status)) {
-                if (!directlyRelevant) errors.add(prefix + " 只有 directly_relevant=true 才能改变假设状态");
-                if (refs.isEmpty()) errors.add(prefix + " 改变状态时必须提供 evidence_refs");
-                if ("none".equals(strength)) errors.add(prefix + " 改变状态时 evidence_strength 不能为 none");
-                for (String ref : refs) {
-                    if (!isKnownEvidenceReference(ref, state.executionLog)) {
-                        errors.add(prefix + " 引用了不存在的证据: " + ref);
-                    }
-                }
-            }
-        }
-        return errors;
-    }
-
-    private Map<String, Map<String, Object>> indexedHypotheses(Map<String, Object> investigationState) {
-        Map<String, Map<String, Object>> indexed = new LinkedHashMap<>();
-        Object hypothesesValue = investigationState.get("hypotheses");
-        if (!(hypothesesValue instanceof List<?>)) {
-            hypothesesValue = investigationState.get("hypothesis_updates");
-        }
-        if (hypothesesValue instanceof List<?> hypotheses) {
-            for (Object value : hypotheses) {
-                Map<String, Object> hypothesis = json.asMap(value);
-                if (hasText(hypothesis, "hypothesis")) {
-                    indexed.put(String.valueOf(hypothesis.get("hypothesis")), hypothesis);
-                }
-            }
-        }
-        return indexed;
-    }
-
-    private boolean sameHypothesisState(Map<String, Object> previous, Map<String, Object> update) {
-        for (String field : List.of(
-                "status", "update_reason", "evidence_strength", "directly_relevant", "evidence_refs")) {
-            if (!java.util.Objects.equals(previous.get(field), update.get(field))) return false;
-        }
-        return true;
-    }
-
-    private void mergeInvestigationState(Map<String, Object> summary, RuntimeState state) {
-        Map<String, Object> merged = new LinkedHashMap<>(state.investigationState);
-        merged.remove("latest_observation");
-        merged.remove("hypothesis_updates");
-        for (String field : List.of(
-                "current_question", "next_information_needed", "action_reason",
-                "expected_information_gain", "stop_reason")) {
-            if (summary.containsKey(field)) merged.put(field, summary.get(field));
-        }
-
-        Map<String, Map<String, Object>> hypotheses = indexedHypotheses(state.investigationState);
-        Object updatesValue = summary.get("hypothesis_updates");
-        if (updatesValue instanceof List<?> updates) {
-            for (Object value : updates) {
-                Map<String, Object> update = json.asMap(value);
-                if (hasText(update, "hypothesis")) {
-                    hypotheses.put(String.valueOf(update.get("hypothesis")), new LinkedHashMap<>(update));
-                }
-            }
-        }
-        merged.put("hypotheses", new java.util.ArrayList<>(hypotheses.values()));
-        state.investigationState.clear();
-        state.investigationState.putAll(merged);
-    }
-
-    private boolean isKnownEvidenceReference(String reference, List<AgentExecutionLogEntry> executionLog) {
-        if (reference == null || reference.isBlank()) return false;
-        for (AgentExecutionLogEntry entry : executionLog) {
-            String toolName = entry.getToolName();
-            String step = entry.getStep();
-            if (reference.equals(toolName)
-                    || reference.startsWith(toolName + ".")
-                    || reference.equals(step)
-                    || reference.startsWith(step + ".")) {
-                return true;
-            }
+        if (state.blockedActionFingerprints.contains(fingerprint)) {
+            ToolFailureRecord failure = state.activeToolFailures.get(fingerprint);
+            state.riskFlags.add("failed_same_call_blocked_" + toolName);
+            state.validationFeedback = failure == null
+                    ? "相同 tool+input 已确认失败；请修改输入、使用替代工具或保守结束。"
+                    : "相同 tool+input 已确认失败（" + failure.error().code() + "）；"
+                    + "只能遵循 active_tool_failures.allowed_actions 恢复。";
+            return true;
         }
         return false;
-    }
-
-    private boolean hasText(Map<String, Object> source, String field) {
-        return source.get(field) instanceof String text && !text.isBlank();
     }
 
     /** 向流式页面发送结构化澄清事件，页面可区分第一轮澄清和执行中澄清。 */
@@ -402,7 +305,9 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
                 json.toTree(state.executionLog),
                 json.toTree(state.ephemeralMemory),
                 json.toTree(state.businessDecisions),
-                json.toTree(state.investigationState),
+                json.toTree(state.activeToolFailures.values().stream()
+                        .map(ToolFailureRecord::toPublicMap)
+                        .toList()),
                 state.validationFeedback,
                 json.toTree(state.riskFlags)), promptBudget());
         String prompt = promptAssembler.assembleActionPrompt(
@@ -417,21 +322,17 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
                 "round", round,
                 "prompt", prompt,
                 "working_context", context), Map.of());
-        Map<String, Object> priorInvestigationState = new LinkedHashMap<>(state.investigationState);
         var rawResponse = useModelStream
                 ? chatModelStream(prompt, buildModelProgressConsumer(eventConsumer, "第 " + round + " 轮模型正在流式返回"))
                 : chatModel(prompt);
         Map<String, Object> response = json.asMap(rawResponse);
-        if ("react".equals(state.routeDecision.getExecutionMode())) {
-            Map<String, Object> decisionSummary = json.asMap(response.get("decision_summary"));
-            if (!decisionSummary.isEmpty() && validateDecisionSummary(response, state).isEmpty()) {
-                mergeInvestigationState(decisionSummary, state);
-            }
-        }
         state.trace.record(ExecutionEventType.ACTION_MODEL_RESPONDED, Map.of("round", round), response);
         state.executionLog.add(buildReasoningLog(
                 input, round, state.validationFeedback, state.businessDecisions,
-                priorInvestigationState, response));
+                state.activeToolFailures.values().stream()
+                        .map(ToolFailureRecord::toPublicMap)
+                        .toList(),
+                response));
         state.lastValidationFeedback = state.validationFeedback;
         state.validationFeedback = "";
         state.ephemeralMemory.clear();

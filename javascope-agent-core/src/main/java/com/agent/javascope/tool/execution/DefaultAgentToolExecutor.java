@@ -8,15 +8,17 @@ import com.agent.javascope.tool.contract.JsonSchemaToolContractValidator;
 import com.agent.javascope.tool.contract.ToolContractValidator;
 import com.agent.javascope.tool.contract.ToolSemanticValidator;
 import com.agent.javascope.tool.invocation.ToolInvoker;
+import com.agent.javascope.tool.error.DefaultToolErrorClassifier;
 import com.agent.javascope.tool.middleware.ToolExecutionContext;
 import com.agent.javascope.tool.middleware.ToolInvocationChain;
 import com.agent.javascope.tool.middleware.ToolMiddleware;
+import com.agent.javascope.tool.middleware.ToolResultFactory;
 import com.agent.javascope.tool.registry.ToolRegistry;
 import com.agent.javascope.tool.runtime.AgentToolExecutor;
 import com.agent.javascope.tool.runtime.ToolExecutionResult;
 import com.agent.javascope.tool.runtime.ToolExecutionStatus;
+import com.agent.javascope.tool.runtime.ToolErrorCode;
 import com.agent.javascope.tool.runtime.ToolInvocation;
-import com.fasterxml.jackson.databind.node.NullNode;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -24,6 +26,8 @@ import java.util.UUID;
 
 /** 统一串联工具注册、授权、治理链和实际执行的门面。 */
 public class DefaultAgentToolExecutor implements AgentToolExecutor {
+
+    private static final System.Logger LOG = System.getLogger(DefaultAgentToolExecutor.class.getName());
 
     private final ToolRegistry registry;
     private final ToolAuthorizationPolicy authorizationPolicy;
@@ -65,9 +69,21 @@ public class DefaultAgentToolExecutor implements AgentToolExecutor {
     @Override
     public ToolExecutionResult execute(ToolInvocation invocation) {
         String toolName = invocation == null ? "" : invocation.toolName();
+        try {
+            return executeInternal(invocation, toolName);
+        } catch (Exception error) {
+            LOG.log(System.Logger.Level.WARNING,
+                    "Tool execution failed, tool=" + toolName + ", exceptionType=" + error.getClass().getName(),
+                    error);
+            return ToolResultFactory.failed(
+                    toolName, ToolErrorCode.TOOL_INTERNAL_ERROR, "工具运行时处理失败", false);
+        }
+    }
+
+    private ToolExecutionResult executeInternal(ToolInvocation invocation, String toolName) {
         AgentToolDefinition definition = registry.findDefinition(toolName);
         if (definition == null) {
-            return failure(toolName, "tool not registered", "tool_not_registered", false);
+            return failure(toolName, "工具未注册", ToolErrorCode.TOOL_NOT_REGISTERED, false);
         }
         // 输入结构和业务语义在授权及业务方法执行之前确定性校验，模型不能绕过工具契约。
         List<String> inputErrors = contractValidator.validateInput(definition, invocation.input());
@@ -75,17 +91,29 @@ public class DefaultAgentToolExecutor implements AgentToolExecutor {
             inputErrors = merge(inputErrors, validator.validateInput(definition, invocation.input()));
         }
         if (!inputErrors.isEmpty()) {
-            return failure(toolName, String.join("; ", inputErrors), "tool_input_contract_violation", false);
+            return failure(toolName, String.join("; ", inputErrors),
+                    ToolErrorCode.TOOL_INPUT_CONTRACT_VIOLATION, false);
         }
         ToolAuthorizationDecision decision = authorizationPolicy.authorize(definition, invocation);
         if (decision.status() != ToolAuthorizationDecision.Status.ALLOW) {
-            String code = decision.status() == ToolAuthorizationDecision.Status.REQUIRE_CONFIRMATION
-                    ? "tool_confirmation_required"
-                    : "tool_not_authorized";
-            return failure(toolName, decision.reason(), code, false);
+            ToolErrorCode code = decision.status() == ToolAuthorizationDecision.Status.REQUIRE_CONFIRMATION
+                    ? ToolErrorCode.TOOL_CONFIRMATION_REQUIRED
+                    : ToolErrorCode.TOOL_NOT_AUTHORIZED;
+            String publicMessage = decision.status() == ToolAuthorizationDecision.Status.REQUIRE_CONFIRMATION
+                    ? "执行该工具前需要用户确认"
+                    : "当前请求无权执行该工具";
+            return failure(toolName, publicMessage, code, false);
         }
         ToolExecutionContext context = new ToolExecutionContext(UUID.randomUUID().toString(), definition);
-        ToolExecutionResult result = new Chain(0).proceed(context, invocation);
+        ToolExecutionResult result;
+        try {
+            result = new Chain(0).proceed(context, invocation);
+        } catch (Exception error) {
+            LOG.log(System.Logger.Level.WARNING,
+                    "Tool execution chain failed, tool=" + toolName + ", exceptionType=" + error.getClass().getName(),
+                    error);
+            return ToolResultFactory.failed(toolName, DefaultToolErrorClassifier.INSTANCE.classify(error));
+        }
         if (!result.isSuccess()) {
             return result;
         }
@@ -122,17 +150,9 @@ public class DefaultAgentToolExecutor implements AgentToolExecutor {
         return registry.findDefinition(name);
     }
 
-    private ToolExecutionResult failure(String tool, String error, String code, boolean retryable) {
-        return new ToolExecutionResult(
-                tool,
-                ToolExecutionStatus.FAILED,
-                false,
-                List.of(),
-                List.of(error),
-                retryable,
-                code,
-                NullNode.getInstance(),
-                json.emptyObject());
+    private ToolExecutionResult failure(
+            String tool, String error, ToolErrorCode code, boolean retryable) {
+        return ToolResultFactory.failed(tool, code, error, retryable);
     }
 
     private List<ToolSemanticValidator> supportedSemanticValidators(String toolName) {
@@ -156,11 +176,14 @@ public class DefaultAgentToolExecutor implements AgentToolExecutor {
         envelope.put("error_code", result.errorCode());
         envelope.put("data", result.data());
         envelope.put("metadata", result.metadata());
+        if (result.error() != null) envelope.put("error", ToolResultFactory.publicError(result.error()));
         return json.toTree(envelope);
     }
 
     /** 契约失败时保留原始 data 供审计，但把结果改为 failed，阻止计划步骤继续消费。 */
     private ToolExecutionResult contractFailure(ToolExecutionResult result, List<String> errors) {
+        var toolError = DefaultToolErrorClassifier.INSTANCE.classify(
+                ToolErrorCode.TOOL_OUTPUT_CONTRACT_VIOLATION, "工具返回结果不符合契约", false);
         return new ToolExecutionResult(
                 result.toolName(),
                 ToolExecutionStatus.FAILED,
@@ -168,9 +191,10 @@ public class DefaultAgentToolExecutor implements AgentToolExecutor {
                 merge(result.validationRules(), List.of("工具输出必须满足 output_schema 和业务语义契约")),
                 merge(result.validationErrors(), errors),
                 false,
-                "tool_output_contract_violation",
+                toolError.code(),
                 result.data(),
-                result.metadata());
+                result.metadata(),
+                toolError);
     }
 
     private final class Chain implements ToolInvocationChain {

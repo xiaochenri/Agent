@@ -59,7 +59,8 @@ public class FinalAnswerSynthesizer {
             state.blockedReason = blockedReason(state.lastFinalAnswer, state.executionLog);
             return true;
         }
-        state.lastValidation = validateFinalAnswer(input, state.latestPlan, state.executionLog, state.lastFinalAnswer);
+        state.lastValidation = validateFinalAnswer(input, state.latestPlan, state.executionLog,
+                state.lastFinalAnswer, state);
         if (state.lastValidation.passed()) {
             state.blockedReason = blockedReason(state.lastFinalAnswer, state.executionLog);
             return true;
@@ -144,7 +145,8 @@ public class FinalAnswerSynthesizer {
         if (!properties.isFinalAnswerValidationEnabled()) {
             return state.lastFinalAnswer != null && !state.lastFinalAnswer.isEmpty();
         }
-        state.lastValidation = validateFinalAnswer(input, state.latestPlan, state.executionLog, state.lastFinalAnswer);
+        state.lastValidation = validateFinalAnswer(input, state.latestPlan, state.executionLog,
+                state.lastFinalAnswer, state);
         if (!state.lastValidation.passed()) {
             handleValidationFailure(FINAL_SYNTHESIS_ROUND, state);
             return false;
@@ -159,7 +161,8 @@ public class FinalAnswerSynthesizer {
             String input,
             List<PlanStepDefinition> plan,
             List<AgentExecutionLogEntry> executionLog,
-            Map<String, Object> finalAnswer) {
+            Map<String, Object> finalAnswer,
+            RuntimeState state) {
         VerifierResult result = independentVerifierService.verify(input, plan, executionLog, finalAnswer);
         List<String> reasons = new ArrayList<>();
         for (VerifierCheck check : result.getChecks()) {
@@ -171,7 +174,8 @@ public class FinalAnswerSynthesizer {
         if (reasons.isEmpty() && "fail".equals(result.getVerdict())) {
             reasons = List.of(json.normalize(result.getSummary(), "独立验证器判定失败"));
         }
-        boolean passed = "pass".equals(result.getVerdict());
+        List<VerifierCheck> checks = new ArrayList<>(result.getChecks());
+        boolean passed = "pass".equals(result.getVerdict()) && reasons.isEmpty();
         VerifierNextAction nextAction = result.getNextAction();
         boolean suggestReplan = !passed && !"none".equals(json.normalize(nextAction.getCategory(), "none"));
         return new ValidationResult(
@@ -179,7 +183,7 @@ public class FinalAnswerSynthesizer {
                 reasons,
                 suggestReplan,
                 result.getSummary(),
-                result.getChecks(),
+                checks,
                 result.getEvidence(),
                 result.getWarnings(),
                 result.getNextAction());

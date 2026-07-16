@@ -16,12 +16,15 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.sql.DataSource;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /** Event and fundamental evidence retrieval tools. */
 @Component
 public class ResearchEvidenceTools extends StockToolSupport {
+    private static final Logger LOG = LoggerFactory.getLogger(ResearchEvidenceTools.class);
     private static final String NEWS_SCHEMA = """
             {"type":"object","properties":{"keyword":{"type":"string"},"time_window":{"type":"string"},"start_date":{"type":"string","description":"yyyy-MM-dd"},"end_date":{"type":"string","description":"yyyy-MM-dd"}},"required":["keyword"]}
             """;
@@ -50,9 +53,14 @@ public class ResearchEvidenceTools extends StockToolSupport {
     @AgentTool(name = "news_search", title = "新闻检索", namespace = "finance.news", category = "news_search", tags = {"stock", "news", "readonly"}, inputSchema = NEWS_SCHEMA, description = "按关键词查询事件证据。")
     public String newsSearch(Map<String, Object> input, String raw) {
         String keyword = firstNonBlank(asString(input.get("keyword")), raw);
-        if (keyword.isBlank()) return fail("news_search", "keyword 不能为空", false);
-        StockTimeWindowResolver.ResolvedTimeWindow window = StockTimeWindowResolver.resolveNews(
-                asString(input.get("start_date")), asString(input.get("end_date")), asString(input.get("time_window")));
+        if (keyword.isBlank()) return fail("news_search", StockToolError.KEYWORD_REQUIRED);
+        StockTimeWindowResolver.ResolvedTimeWindow window;
+        try {
+            window = StockTimeWindowResolver.resolveNews(
+                    asString(input.get("start_date")), asString(input.get("end_date")), asString(input.get("time_window")));
+        } catch (IllegalArgumentException error) {
+            return fail("news_search", StockToolError.INVALID_TIME_WINDOW);
+        }
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("keyword", keyword);
         data.put("time_window", window.display());
@@ -68,12 +76,15 @@ public class ResearchEvidenceTools extends StockToolSupport {
     public String knowledgeSearch(Map<String, Object> input, String raw) {
         String symbol = asString(input.get("symbol"));
         String query = firstNonBlank(asString(input.get("query")), firstNonBlank(asString(input.get("keyword")), raw));
-        if (query.isBlank()) return fail("knowledge_search", "query 不能为空", false);
+        if (query.isBlank()) return fail("knowledge_search", StockToolError.QUERY_REQUIRED);
         int topK = topK(input.get("top_k"), defaultTopK);
         try {
             vectorStore.createTableIfNotExists();
             float[] vector = TextVectorBuilder.build(symbol.isBlank() ? query : symbol + " " + query, vectorDimensions);
             List<VectorSearchResult> results = vectorStore.search(vector, topK, DistanceMetric.COSINE);
+            if (results.isEmpty()) {
+                return fail("knowledge_search", StockToolError.KNOWLEDGE_NOT_FOUND);
+            }
             List<Map<String, Object>> items = new ArrayList<>();
             for (VectorSearchResult result : results)
                 items.add(Map.of("id", result.id(), "score", result.score(), "distance", result.distance(), "content", truncate(result.content(), 500), "metadata", result.metadataJson()));
@@ -87,7 +98,8 @@ public class ResearchEvidenceTools extends StockToolSupport {
             return success("knowledge_search", data, "[\"query 非空\",\"向量检索完成\"]");
         } catch (Exception e) {
             // 基础设施异常不能伪装成检索成功，否则计划会把占位摘要当成真实财报证据。
-            return fail("knowledge_search", "知识库暂时不可用: " + e.getClass().getSimpleName(), true);
+            logInternalFailure("knowledge_search", e);
+            return fail("knowledge_search", StockToolError.KNOWLEDGE_STORE_UNAVAILABLE);
         }
     }
 
@@ -106,14 +118,17 @@ public class ResearchEvidenceTools extends StockToolSupport {
         FinancialReportPeriodResolver.ResolvedPeriod resolvedPeriod =
                 FinancialReportPeriodResolver.resolve(rawReportPeriod).orElse(null);
         String reportPeriod = resolvedPeriod == null ? "" : resolvedPeriod.reportPeriod();
-        if (symbol.isBlank()) return fail("financial_report_metrics", "symbol 不能为空", false);
-        if (reportPeriod.isBlank()) return fail("financial_report_metrics", "report_period 不能为空，必须先完成澄清", false);
+        if (symbol.isBlank()) return fail("financial_report_metrics", StockToolError.SYMBOL_REQUIRED);
+        if (reportPeriod.isBlank()) return fail("financial_report_metrics", StockToolError.INVALID_REPORT_PERIOD);
         int topK = topK(input.get("top_k"), defaultTopK);
         try {
             vectorStore.createTableIfNotExists();
             String query = symbol + " " + reportPeriod + " 归母净利润 总股本 基本每股收益";
             List<VectorSearchResult> results = vectorStore.search(
                     TextVectorBuilder.build(query, vectorDimensions), topK, DistanceMetric.COSINE);
+            if (results.isEmpty()) {
+                return fail("financial_report_metrics", StockToolError.REPORT_NOT_FOUND);
+            }
             StringBuilder evidenceText = new StringBuilder();
             List<Map<String, Object>> sources = new ArrayList<>();
             for (VectorSearchResult result : results) {
@@ -152,8 +167,14 @@ public class ResearchEvidenceTools extends StockToolSupport {
             return success("financial_report_metrics", data,
                     "[\"symbol和report_period非空\",\"财报指标来自检索文档\",\"输出计算就绪状态\"]");
         } catch (Exception e) {
-            return fail("financial_report_metrics", "财报指标检索暂时不可用: " + e.getClass().getSimpleName(), true);
+            logInternalFailure("financial_report_metrics", e);
+            return fail("financial_report_metrics", StockToolError.FINANCIAL_REPORT_SERVICE_UNAVAILABLE);
         }
+    }
+
+    private void logInternalFailure(String tool, Exception error) {
+        LOG.warn("Business tool dependency failed, tool={}, exceptionType={}", tool, error.getClass().getName());
+        LOG.debug("Business tool dependency failure details, tool={}", tool, error);
     }
 
     /** 识别带元/万元/亿元或股/万股/亿股单位的财报数值，并统一换算为基础单位。 */

@@ -1,6 +1,7 @@
 package com.agent.javascope.agent.planning;
 
 import com.agent.javascope.agent.runtime.RuntimeState;
+import com.agent.javascope.agent.runtime.ToolFailureTracker;
 import com.agent.javascope.agent.support.BusinessDecisionTracker;
 import com.agent.javascope.agent.support.ToolExecutionResultMapper;
 import com.agent.javascope.context.trace.ExecutionEventType;
@@ -17,7 +18,10 @@ import com.agent.javascope.prompt.AgentPromptProvider;
 import com.agent.javascope.tool.annotation.ToolType;
 import com.agent.javascope.tool.runtime.AgentToolExecutor;
 import com.agent.javascope.tool.runtime.ToolExecutionResult;
+import com.agent.javascope.tool.runtime.ToolErrorCode;
 import com.agent.javascope.tool.runtime.ToolInvocation;
+import com.agent.javascope.tool.error.DefaultToolErrorClassifier;
+import com.agent.javascope.tool.middleware.ToolResultFactory;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -65,43 +69,53 @@ public class ToolCallDispatcher {
             String toolName = json.normalize(call.getName(), "");
             AgentToolDefinition definition = toolExecutor.getToolDefinition(toolName);
             if (definition == null) {
-                state.executionLog.add(buildToolLog(round, toolName, call.getInput(),
-                        buildDirectCallFailure(toolName, "tool not registered")));
+                recordRejectedCall(state, round, toolName, call.getInput(), "tool not registered");
                 state.riskFlags.add("tool_call_unknown_" + toolName);
                 continue;
             }
             if (!definition.isAllowedDirectCall()) {
-                state.executionLog.add(buildToolLog(round, toolName, call.getInput(),
-                        buildDirectCallFailure(toolName, "tool direct call is not allowed")));
+                recordRejectedCall(state, round, toolName, call.getInput(),
+                        "tool direct call is not allowed");
                 state.riskFlags.add("tool_call_direct_not_allowed_" + toolName);
                 continue;
             }
             if (!"planned".equals(state.routeDecision.getExecutionMode())
                     && ("create_plan".equals(toolName) || "revise_plan".equals(toolName))) {
-                state.executionLog.add(buildToolLog(round, toolName, call.getInput(),
-                        buildDirectCallFailure(toolName, "planning tool is only allowed in planned execution mode")));
+                recordRejectedCall(state, round, toolName, call.getInput(),
+                        "planning tool is only allowed in planned execution mode");
                 state.riskFlags.add("non_planned_mode_planning_tool_blocked_" + toolName);
                 state.validationFeedback = "当前执行模式不允许创建或修订计划；请基于已有观察选择业务工具，或输出 final_answer。";
                 continue;
             }
             if (state.planRecoveryRequired && !"revise_plan".equals(toolName)) {
-                state.executionLog.add(buildToolLog(round, toolName, call.getInput(),
-                        buildDirectCallFailure(toolName,
-                                "plan recovery requires revise_plan or conservative final_answer")));
+                recordRejectedCall(state, round, toolName, call.getInput(),
+                        "plan recovery requires revise_plan or conservative final_answer");
                 state.riskFlags.add("plan_recovery_non_revision_tool_blocked_" + toolName);
                 state.validationFeedback = "当前计划处于失败恢复状态；禁止调用业务工具、create_plan 或 clarify_requirement。"
                         + "请选择 revise_plan，或不调用工具并输出基于现有证据的保守 final_answer。";
                 continue;
             }
             if (requiresPlanGate(definition, toolName, state)) {
-                state.executionLog.add(buildToolLog(round, toolName, call.getInput(),
-                        buildDirectCallFailure(toolName, "business tool requires create_plan before execution")));
+                recordRejectedCall(state, round, toolName, call.getInput(),
+                        "business tool requires create_plan before execution");
                 state.riskFlags.add("tool_call_requires_plan_" + toolName);
                 state.validationFeedback = "当前尚未建立执行计划。请先调用 create_plan；"
                         + "只有在运行时 allowlist 中显式放行的单步业务工具才能绕过计划。";
                 continue;
             }
             Map<String, Object> toolInput = enrichToolInput(toolName, call.getInput(), state);
+            String actionFingerprint = ToolFailureTracker.fingerprint(toolName, toolInput, json);
+            if (state.unavailableTools.contains(toolName)
+                    || state.blockedActionFingerprints.contains(actionFingerprint)) {
+                String reason = state.unavailableTools.contains(toolName)
+                        ? "tool is currently unavailable; follow active_tool_failures.allowed_actions"
+                        : "same failed tool+input is blocked; follow active_tool_failures.allowed_actions";
+                state.executionLog.add(buildToolLog(
+                        round, toolName, toolInput, buildDirectCallFailure(toolName, reason)));
+                state.riskFlags.add("tool_failure_replay_blocked_" + toolName);
+                state.validationFeedback = reason;
+                continue;
+            }
             state.trace.record(ExecutionEventType.TOOL_REQUESTED, Map.of(
                     "round", round,
                     "tool", toolName,
@@ -114,6 +128,8 @@ public class ToolCallDispatcher {
                     "tool", toolName,
                     "input", toolInput), resultJson);
             state.executionLog.add(buildToolLog(round, toolName, toolInput, resultJson));
+            ToolFailureTracker.recordResult(
+                    state, round, "tool_call_round_" + round, toolName, toolInput, toolResult, json);
             recordRevisionInputOutput(toolName, toolInput, resultJson, state);
             if (!toolResult.isSuccess()) {
                 state.riskFlags.add("tool_call_failed_" + toolName);
@@ -168,8 +184,28 @@ public class ToolCallDispatcher {
         result.put("validation_rules", List.of());
         result.put("validation_errors", List.of(error));
         result.put("retryable", false);
+        var toolError = DefaultToolErrorClassifier.INSTANCE.classify(
+                ToolErrorCode.TOOL_ACTION_REJECTED, error, false);
+        result.put("error_code", toolError.code());
+        result.put("error", ToolResultFactory.publicError(toolError));
         result.put("data", null);
+        result.put("metadata", Map.of());
         return result;
+    }
+
+    /** 将执行前拒绝同时写入审计日志与活跃失败区，避免只存在于普通 Observation。 */
+    private void recordRejectedCall(
+            RuntimeState state,
+            int round,
+            String toolName,
+            Map<String, Object> input,
+            String message) {
+        var toolError = DefaultToolErrorClassifier.INSTANCE.classify(
+                ToolErrorCode.TOOL_ACTION_REJECTED, message, false);
+        Map<String, Object> failure = buildDirectCallFailure(toolName, message);
+        state.executionLog.add(buildToolLog(round, toolName, input, failure));
+        ToolFailureTracker.recordFailure(
+                state, round, "tool_call_round_" + round, toolName, input, toolError, 1, json);
     }
 
     /**
@@ -241,6 +277,7 @@ public class ToolCallDispatcher {
         state.latestPlanResult = data;
         List<PlanStepDefinition> plan = data.getPlan();
         if ("revise_plan".equals(sourceTool)) {
+            ToolFailureTracker.resolvePlanPreconditions(state);
             state.latestPlan = mergeRevisionIntoPlan(plan, data.getReplacements(), state);
             state.latestPlanResult.setPlan(state.latestPlan);
             rebuildPlanSteps(state, sourceTool);

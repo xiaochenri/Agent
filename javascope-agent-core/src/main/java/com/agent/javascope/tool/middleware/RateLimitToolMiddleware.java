@@ -1,6 +1,7 @@
 package com.agent.javascope.tool.middleware;
 
 import com.agent.javascope.tool.runtime.ToolExecutionResult;
+import com.agent.javascope.tool.runtime.ToolErrorCode;
 import com.agent.javascope.tool.runtime.ToolInvocation;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -27,7 +28,7 @@ public class RateLimitToolMiddleware implements ToolMiddleware {
         });
         if (window.count.incrementAndGet() > maxRequestsPerMinute) {
             return ToolResultFactory.failed(
-                    invocation.toolName(), "tool_rate_limited", "tool rate limit exceeded", true);
+                    invocation.toolName(), ToolErrorCode.TOOL_RATE_LIMITED, "工具调用过于频繁", true);
         }
         return chain.proceed(context, invocation);
     }

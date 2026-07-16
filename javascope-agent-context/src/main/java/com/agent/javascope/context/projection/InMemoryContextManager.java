@@ -72,7 +72,23 @@ public class InMemoryContextManager implements ContextManager {
         ArrayNode latestObservations = latestToolObservations(executionLog, budget.maxEvidenceItems());
         return new WorkingContext(
                 request.currentPlan(), history, constraints, evidence,
-                latestObservations, request.investigationState());
+                latestObservations, promptSafeActiveFailures(request.activeToolFailures()));
+    }
+
+    /**
+     * 活跃失败由运行时限定为小集合，这里只移除禁止进入 Prompt 的内部诊断字段，
+     * 不按工具名去重，也不应用普通 evidence 窗口上限。
+     */
+    private JsonNode promptSafeActiveFailures(JsonNode failures) {
+        if (!failures.isArray()) return JsonNodeFactory.instance.arrayNode();
+        ArrayNode safe = JsonNodeFactory.instance.arrayNode();
+        for (JsonNode failure : failures) {
+            if (!failure.isObject()) continue;
+            ObjectNode item = failure.deepCopy();
+            item.remove(List.of("exception_type", "exceptionType", "details_ref", "detailsRef", "data"));
+            safe.add(item);
+        }
+        return safe;
     }
 
     private ArrayNode selectRelevantHistory(JsonNode executionLog, int limit) {
@@ -92,8 +108,30 @@ public class InMemoryContextManager implements ContextManager {
         }
         List<Integer> indexes = new ArrayList<>(selected);
         Collections.sort(indexes);
-        for (Integer index : indexes) selectedHistory.add(executionLog.get(index));
+        for (Integer index : indexes) selectedHistory.add(promptSafeHistoryItem(executionLog.get(index)));
         return selectedHistory;
+    }
+
+    /** 失败工具的原始数据只留在 ExecutionLogStore，不通过历史窗口重新进入 Prompt。 */
+    private JsonNode promptSafeHistoryItem(JsonNode item) {
+        if (!isToolObservation(item) || !"failed".equals(item.path("output").path("status").asText())) {
+            return item;
+        }
+        ObjectNode safeItem = item.deepCopy();
+        ObjectNode safeOutput = (ObjectNode) safeItem.path("output");
+        safeOutput.set("data", NullNode.getInstance());
+        safeOutput.set("metadata", JsonNodeFactory.instance.objectNode());
+        if (safeOutput.path("error").isObject()) {
+            ObjectNode safeError = (ObjectNode) safeOutput.path("error");
+            safeError.remove(List.of("exception_type", "exceptionType", "details_ref", "detailsRef"));
+            String publicMessage = safeError.path("public_message").asText("");
+            if (!publicMessage.isBlank()) {
+                ArrayNode errors = JsonNodeFactory.instance.arrayNode();
+                errors.add(publicMessage);
+                safeOutput.set("validation_errors", errors);
+            }
+        }
+        return safeItem;
     }
 
     private void selectToolEntries(
@@ -146,16 +184,47 @@ public class InMemoryContextManager implements ContextManager {
         if (!output.path("error_code").asText("").isBlank()) {
             summary.put("error_code", output.path("error_code").asText());
         }
+        if (output.path("error").isObject()) {
+            ObjectNode publicError = JsonNodeFactory.instance.objectNode();
+            copyIfPresent(output.path("error"), publicError, "category");
+            copyIfPresent(output.path("error"), publicError, "code");
+            copyIfPresent(output.path("error"), publicError, "public_message");
+            copyIfPresent(output.path("error"), publicError, "recovery_owner");
+            if (output.path("error").path("allowed_actions").isArray()) {
+                publicError.set("allowed_actions", compact(output.path("error").path("allowed_actions"), 0));
+            }
+            publicError.put("retryable", output.path("error").path("retryable").asBoolean(false));
+            summary.set("error", publicError);
+        }
+        JsonNode metadata = output.path("metadata");
+        if (metadata.path("attempt_count").canConvertToInt()) {
+            ObjectNode attempt = JsonNodeFactory.instance.objectNode();
+            attempt.put("attempt_count", metadata.path("attempt_count").asInt());
+            attempt.put("max_attempts", metadata.path("max_attempts").asInt(1));
+            attempt.put("retry_exhausted", metadata.path("retry_exhausted").asBoolean(false));
+            attempt.put("retry_skipped", metadata.path("retry_skipped").asBoolean(false));
+            summary.set("attempt", attempt);
+        }
         if (!item.path("input").isMissingNode() && !item.path("input").isNull()) {
             summary.set("input", compact(item.path("input"), 0));
         }
-        if (!output.path("data").isMissingNode() && !output.path("data").isNull()) {
+        // 失败结果中的 data 可能是输出契约校验前的原始载荷，只能用于审计，不得污染核心 Observation。
+        boolean usableSuccess = "success".equals(output.path("status").asText())
+                && output.path("validation_passed").asBoolean(false);
+        if (usableSuccess && !output.path("data").isMissingNode() && !output.path("data").isNull()) {
             summary.set("key_data", compact(output.path("data"), 0));
         }
-        if (output.path("validation_errors").isArray() && !output.path("validation_errors").isEmpty()) {
+        if (!output.path("error").isObject()
+                && output.path("validation_errors").isArray()
+                && !output.path("validation_errors").isEmpty()) {
             summary.set("errors", compact(output.path("validation_errors"), 0));
         }
         return summary;
+    }
+
+    private void copyIfPresent(JsonNode source, ObjectNode target, String field) {
+        JsonNode value = source.path(field);
+        if (!value.isMissingNode() && !value.isNull()) target.set(field, value.deepCopy());
     }
 
     /** 对工具数据做有界递归压缩，保留决策所需内容而不把完整大结果重复放入 Prompt。 */

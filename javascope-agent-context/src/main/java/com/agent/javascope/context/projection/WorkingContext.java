@@ -15,10 +15,10 @@ public record WorkingContext(
         JsonNode evidenceSummaries,
         /** 每个已调用工具最近一次结果的结构化摘要，避免关键观察被普通历史挤出窗口。 */
         JsonNode latestObservations,
-        /** ReAct 当前调查问题、假设变化、信息缺口及动作依据。 */
-        JsonNode investigationState) {
+        /** 所有尚未解除的最终工具失败，不按工具名去重，也不受历史窗口挤压。 */
+        JsonNode activeToolFailures) {
 
-    /** 兼容尚未传入调查状态的上下文管理器。 */
+    /** 兼容尚未传入活跃失败区域的上下文管理器。 */
     public WorkingContext(
             JsonNode currentPlan,
             JsonNode relevantHistory,
@@ -26,7 +26,7 @@ public record WorkingContext(
             JsonNode evidenceSummaries,
             JsonNode latestObservations) {
         this(currentPlan, relevantHistory, activeConstraints, evidenceSummaries,
-                latestObservations, JsonNodeFactory.instance.objectNode());
+                latestObservations, JsonNodeFactory.instance.arrayNode());
     }
 
     /** 兼容最初仅提供历史、约束和证据摘要的上下文管理器。 */
@@ -36,6 +36,6 @@ public record WorkingContext(
             JsonNode activeConstraints,
             JsonNode evidenceSummaries) {
         this(currentPlan, relevantHistory, activeConstraints, evidenceSummaries,
-                JsonNodeFactory.instance.arrayNode(), JsonNodeFactory.instance.objectNode());
+                JsonNodeFactory.instance.arrayNode(), JsonNodeFactory.instance.arrayNode());
     }
 }

@@ -39,9 +39,9 @@ public class FinancialMetricTools extends StockToolSupport {
         Double reportedEps = number(input.get("reported_basic_eps"));
         Double netProfit = number(input.get("net_profit"));
         Double totalShares = number(input.get("total_shares"));
-        if (symbol.isBlank()) return fail("financial_metric_calculator", "symbol 不能为空", false);
-        if (reportPeriod.isBlank()) return fail("financial_metric_calculator", "report_period 不能为空", false);
-        if (price == null || price <= 0) return fail("financial_metric_calculator", "price 必须是正数", false);
+        if (symbol.isBlank()) return fail("financial_metric_calculator", StockToolError.SYMBOL_REQUIRED);
+        if (reportPeriod.isBlank()) return fail("financial_metric_calculator", StockToolError.INVALID_REPORT_PERIOD);
+        if (price == null || price <= 0) return fail("financial_metric_calculator", StockToolError.INVALID_PRICE);
 
         String epsBasis;
         Double eps;
@@ -52,13 +52,13 @@ public class FinancialMetricTools extends StockToolSupport {
             eps = netProfit / totalShares;
             epsBasis = firstNonBlank(asString(input.get("eps_basis")), "net_profit/total_shares");
         } else {
-            return fail("financial_metric_calculator", "缺少可用EPS，必须提供 reported_basic_eps 或 net_profit+total_shares", false);
+            return fail("financial_metric_calculator", StockToolError.EPS_INPUT_INCOMPLETE);
         }
         if (!Double.isFinite(eps) || eps == 0D) {
-            return fail("financial_metric_calculator", "EPS 无效或为零，无法计算PE", false);
+            return fail("financial_metric_calculator", StockToolError.EPS_INVALID);
         }
         double pe = price / eps;
-        if (!Double.isFinite(pe)) return fail("financial_metric_calculator", "PE 计算结果无效", false);
+        if (!Double.isFinite(pe)) return fail("financial_metric_calculator", StockToolError.PE_CALCULATION_INVALID);
 
         Map<String, Object> formula = new LinkedHashMap<>();
         formula.put("eps", reportedEps != null ? "使用财报披露的基本EPS" : "net_profit / total_shares");

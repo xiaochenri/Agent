@@ -1,6 +1,10 @@
 package com.agent.javascope.tools;
 
 import com.agent.javascope.contract.tool.AgentToolDefinition;
+import com.agent.javascope.tool.error.DefaultToolErrorClassifier;
+import com.agent.javascope.tool.middleware.ToolResultFactory;
+import com.agent.javascope.tool.runtime.ToolError;
+import com.agent.javascope.tool.runtime.ToolErrorCode;
 import com.agent.javascope.tool.runtime.ToolExecutionResult;
 import com.agent.javascope.tool.runtime.ToolExecutionStatus;
 import com.agent.javascope.tool.runtime.ToolInvocation;
@@ -104,18 +108,19 @@ public class ReflectiveAgentToolExecutor implements ToolRegistry, ToolInvoker, S
                 tool, input.size(), !rawInput.isBlank());
         if (toolMethod == null) {
             LOG.debug("Reflective agent tool invocation rejected because the tool is not registered, tool={}", tool);
-            return buildFail(tool, "tool not registered", false);
+            return buildFail(tool, ToolErrorCode.TOOL_NOT_REGISTERED, "工具未注册", false);
         }
         AgentToolDefinition definition = definitions.get(tool);
         if (definition == null || definition.getVisibility() == ToolVisibility.DISABLED) {
             LOG.debug("Reflective agent tool invocation rejected because the tool is disabled, tool={}", tool);
-            return buildFail(tool, "tool disabled", false);
+            return buildFail(tool, ToolErrorCode.TOOL_DISABLED, "工具当前已禁用", false);
         }
         // 执行前先按工具协议做最小校验，避免明显非法参数进入业务方法。
         List<String> validationErrors = validateInput(definition, input);
         if (!validationErrors.isEmpty()) {
             LOG.debug("Reflective agent tool input validation failed, tool={}, errorCount={}", tool, validationErrors.size());
-            return buildFail(tool, String.join("; ", validationErrors), true);
+            return buildFail(tool, ToolErrorCode.TOOL_INPUT_CONTRACT_VIOLATION,
+                    String.join("; ", validationErrors), false);
         }
         try {
             Method method = toolMethod.method();
@@ -128,7 +133,7 @@ public class ReflectiveAgentToolExecutor implements ToolRegistry, ToolInvoker, S
                 result = method.invoke(toolMethod.bean());
             }
             ToolExecutionResult executionResult = result == null
-                    ? buildFail(tool, "tool result is null", false)
+                    ? buildFail(tool, ToolErrorCode.TOOL_RESULT_NULL, "工具未返回结果", false)
                     : toToolResult(tool, result);
             LOG.debug("Reflective agent tool invocation completed, tool={}, status={}, retryable={}",
                     tool, executionResult.status(), executionResult.retryable());
@@ -136,7 +141,7 @@ public class ReflectiveAgentToolExecutor implements ToolRegistry, ToolInvoker, S
         } catch (Exception e) {
             LOG.warn("Reflective agent tool invocation failed, tool={}, exceptionType={}", tool, e.getClass().getSimpleName());
             LOG.debug("Reflective agent tool invocation failure details, tool={}", tool, e);
-            return buildFail(tool, "tool execute exception: " + e.getClass().getSimpleName(), true);
+            return ToolResultFactory.failed(tool, DefaultToolErrorClassifier.INSTANCE.classify(e));
         }
     }
 
@@ -326,6 +331,15 @@ public class ReflectiveAgentToolExecutor implements ToolRegistry, ToolInvoker, S
         properties.put("validation_errors", Map.of("type", "array", "items", Map.of("type", "string")));
         properties.put("retryable", Map.of("type", "boolean"));
         properties.put("error_code", Map.of("type", "string"));
+        properties.put("error", Map.of(
+                "type", "object",
+                "properties", Map.of(
+                        "category", Map.of("type", "string"),
+                        "code", Map.of("type", "string"),
+                        "public_message", Map.of("type", "string"),
+                        "recovery_owner", Map.of("type", "string"),
+                        "allowed_actions", Map.of("type", "array", "items", Map.of("type", "string")),
+                        "retryable", Map.of("type", "boolean"))));
         properties.put("data", Map.of("type", "object"));
         properties.put("metadata", Map.of("type", "object"));
         return objectSchema(properties, List.of("tool", "status", "validation_passed", "data"));
@@ -403,41 +417,48 @@ public class ReflectiveAgentToolExecutor implements ToolRegistry, ToolInvoker, S
         try {
             JsonNode node = OBJECT_MAPPER.readTree(String.valueOf(result));
             if (node == null || !node.isObject()) {
-                return buildFail(fallbackToolName, "tool result must be a JSON object", false);
+                return buildFail(fallbackToolName, ToolErrorCode.TOOL_RESULT_INVALID_JSON,
+                        "工具返回结果不是 JSON 对象", false);
             }
             String toolName = node.path("tool").asText(fallbackToolName);
             ToolExecutionStatus status = "success".equals(node.path("status").asText())
                     ? ToolExecutionStatus.SUCCESS
                     : ToolExecutionStatus.FAILED;
+            List<String> validationErrors = OBJECT_MAPPER.convertValue(
+                    node.path("validation_errors"), new TypeReference<List<String>>() {});
+            ToolError toolError = null;
+            if (status == ToolExecutionStatus.FAILED) {
+                String publicMessage = validationErrors.stream().findFirst().orElse("工具执行失败");
+                toolError = DefaultToolErrorClassifier.INSTANCE.classify(
+                        node.path("error_code").asText(ToolErrorCode.TOOL_EXECUTION_FAILED.code()),
+                        publicMessage,
+                        node.path("retryable").asBoolean(false));
+            }
             return new ToolExecutionResult(
                     toolName,
                     status,
                     node.path("validation_passed").asBoolean(status == ToolExecutionStatus.SUCCESS),
                     OBJECT_MAPPER.convertValue(node.path("validation_rules"), new TypeReference<List<String>>() {}),
-                    OBJECT_MAPPER.convertValue(node.path("validation_errors"), new TypeReference<List<String>>() {}),
+                    validationErrors,
                     node.path("retryable").asBoolean(false),
                     node.path("error_code").asText(""),
                     node.has("data") ? node.get("data") : NullNode.getInstance(),
-                    node.has("metadata") ? node.get("metadata") : OBJECT_MAPPER.createObjectNode());
+                    node.has("metadata") ? node.get("metadata") : OBJECT_MAPPER.createObjectNode(),
+                    toolError);
         } catch (Exception e) {
             LOG.debug("Unable to convert reflective tool result to typed result, tool={}, exceptionType={}",
                     fallbackToolName, e.getClass().getSimpleName());
-            return buildFail(fallbackToolName, "tool result is not valid JSON", false);
+            return buildFail(fallbackToolName, ToolErrorCode.TOOL_RESULT_INVALID_JSON,
+                    "工具返回结果不是有效 JSON", false);
         }
     }
 
-    private ToolExecutionResult buildFail(String toolName, String error, boolean retryable) {
-        LOG.debug("Building failed tool execution result, tool={}, retryable={}, error={}", toolName, retryable, error);
-        return new ToolExecutionResult(
-                toolName,
-                ToolExecutionStatus.FAILED,
-                false,
-                List.of(),
-                List.of(error),
-                retryable,
-                "tool_execution_failed",
-                NullNode.getInstance(),
-                OBJECT_MAPPER.createObjectNode());
+    /** 将反射适配器自身发现的协议错误转换为统一失败结果。 */
+    private ToolExecutionResult buildFail(
+            String toolName, ToolErrorCode code, String message, boolean retryable) {
+        LOG.debug("Building failed tool execution result, tool={}, code={}, retryable={}",
+                toolName, code, retryable);
+        return ToolResultFactory.failed(toolName, code, message, retryable);
     }
 
     private record ToolMethod(Object bean, Method method) {}

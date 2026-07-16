@@ -1,6 +1,7 @@
 package com.agent.javascope.agent.support;
 
 import com.agent.javascope.json.AgentJsonCodecUtil;
+import com.agent.javascope.tool.middleware.ToolResultFactory;
 import com.agent.javascope.tool.runtime.ToolExecutionResult;
 
 import java.util.LinkedHashMap;
@@ -27,6 +28,9 @@ public final class ToolExecutionResultMapper {
         mapped.put("validation_errors", List.copyOf(result.validationErrors()));
         mapped.put("retryable", result.retryable());
         mapped.put("error_code", result.errorCode());
+        if (result.error() != null) {
+            mapped.put("error", ToolResultFactory.publicError(result.error()));
+        }
         mapped.put("data", json.convert(result.data(), Object.class));
         mapped.put("metadata", json.convert(result.metadata(), Object.class));
         return mapped;

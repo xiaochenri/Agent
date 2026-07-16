@@ -2,9 +2,12 @@ package com.stockmind.bootstrap;
 
 import com.agent.javascope.tool.annotation.AgentTool;
 import com.stockmind.application.analysis.TechnicalAnalysisService;
+import com.stockmind.application.market.MarketDataNotFoundException;
 
 import java.util.Map;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
@@ -12,6 +15,7 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class TechnicalIndicatorTools extends StockToolSupport {
+    private static final Logger LOG = LoggerFactory.getLogger(TechnicalIndicatorTools.class);
     private static final String TECHNICAL_SCHEMA = """
             {"type":"object","properties":{"symbol":{"type":"string"},"start_date":{"type":"string","description":"yyyy-MM-dd"},"end_date":{"type":"string","description":"yyyy-MM-dd"},"adjustment":{"type":"string","enum":["NONE","FORWARD","BACKWARD"]},"fast_period":{"type":"integer"},"slow_period":{"type":"integer"},"signal_period":{"type":"integer"},"period":{"type":"integer"},"deviations":{"type":"number"}},"required":["symbol"]}
             """;
@@ -58,7 +62,7 @@ public class TechnicalIndicatorTools extends StockToolSupport {
 
     private String run(String tool, Map<String, Object> input, String raw, String type) {
         String symbol = symbol(input, raw);
-        if (symbol.isBlank()) return fail(tool, "symbol 不能为空", false);
+        if (symbol.isBlank()) return fail(tool, StockToolError.SYMBOL_REQUIRED);
         String start = asString(input.get("start_date")), end = asString(input.get("end_date")), adjustment = firstNonBlank(asString(input.get("adjustment")), "FORWARD");
         try {
             Object data = switch (type) {
@@ -75,10 +79,15 @@ public class TechnicalIndicatorTools extends StockToolSupport {
                 default -> analysisService.technicalIndicatorSnapshot(symbol, start, end, adjustment);
             };
             return success(tool, data, "[\"symbol 非空\",\"指标结果包含数据来源与时间范围\",\"不包含买卖指令\"]");
+        } catch (MarketDataNotFoundException e) {
+            return fail(tool, StockToolError.MARKET_DATA_NOT_FOUND);
         } catch (IllegalArgumentException e) {
-            return fail(tool, e.getMessage(), false);
+            return fail(tool, StockToolError.INVALID_TECHNICAL_PARAMETERS);
         } catch (Exception e) {
-            return fail(tool, "技术分析执行失败: " + e.getMessage(), true);
+            LOG.warn("Business tool dependency failed, tool={}, exceptionType={}", tool, e.getClass().getName());
+            LOG.debug("Business tool dependency failure details, tool={}", tool, e);
+            return fail(tool, StockToolError.TECHNICAL_ANALYSIS_UNAVAILABLE);
         }
     }
+
 }

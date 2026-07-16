@@ -34,10 +34,16 @@ public final class RuntimeState {
     public final List<String> ephemeralMemory = new ArrayList<>();
     // 业务工具上报的通用决策状态：作为下一轮推理的高优先级上下文，不负责强制终止推理。
     public final List<Map<String, Object>> businessDecisions = new ArrayList<>();
-    // ReAct 最近一次结构化调查状态：记录当前问题、假设更新、信息缺口和下一动作依据。
-    public final Map<String, Object> investigationState = new LinkedHashMap<>();
     // direct/react 已执行动作指纹（tool+input）；用于保证逐轮观察并阻止模型重复相同动作。
     public final Set<String> observedActionFingerprints = new java.util.LinkedHashSet<>();
+    // 当前任务仍未解除的最终工具失败；按 tool+input 指纹索引并进入 active_tool_failures。
+    public final Map<String, ToolFailureRecord> activeToolFailures = new LinkedHashMap<>();
+    // 已确认失败且禁止原样重放的 tool+input；不同输入不受影响。
+    public final Set<String> blockedActionFingerprints = new java.util.LinkedHashSet<>();
+    // 依赖不可用或熔断打开的工具；恢复前禁止通过更换参数重复调用。
+    public final Set<String> unavailableTools = new java.util.LinkedHashSet<>();
+    // 当前任务内失败记录自增序号，用于生成可审计且不泄露实现细节的 failure_id。
+    public long activeToolFailureSequence = 1L;
     // 当前可执行计划的结构化步骤列表，供 executePlan 顺序执行与依赖校验。
     public final List<PlanStepState> planSteps = new ArrayList<>();
     // 最近一次计划工具返回的完整结果（含 task_understanding 等），用于最终响应聚合。

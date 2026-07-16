@@ -89,9 +89,6 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                 : actionModeRules(executionMode, hasPlan, clarificationAvailable, planRecoveryRequired);
         boolean singleActionMode = "direct".equals(executionMode) || "react".equals(executionMode);
         String responseContract = actionResponseContract(executionMode);
-        String decisionRule = "react".equals(executionMode)
-                ? "- decision_summary 是简洁、可审计的决策记录，不是完整思维过程；不得写空泛的固定分析步骤\n"
-                : "";
         String clarificationRules = clarificationAvailable && !clarificationResponsePhase ? """
                 - clarify_requirement 只处理无法从上下文、惯例或安全默认中消解的业务语义或授权问题
                 - 参数抽取、格式/编码/schema 适配、工具失败、证据不足和能力限制不属于需求澄清
@@ -105,9 +102,12 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                 - 每轮只能二选一：调用“可用工具”，或输出 final_answer；不得同时输出
                 %s
                 - 工具名称和输入必须符合 input_schema；只能引用 output_schema 声明且校验成功的输出字段
+                - 工具失败时，以 active_tool_failures 为权威恢复约束，以 latest_tool_observations.error 补充最近事实
+                - blocked_same_call=true 时不得原样重放相同 tool+input；只能从 allowed_actions 选择后续动作
+                - active_tool_failures 中同一工具的依赖不可用或熔断失败未解除前，不得通过更换参数重复调用该工具
+                - 不得模拟 recovery_owner=SYSTEM 的重试；若没有属于 MODEL/USER 的可执行动作，必须披露限制并保守结束
                 - 若当前输入实际不需要任务执行，直接面向用户回答，不调用工具
                 - 优先遵守“当前约束与校验反馈”；最终结论必须可追溯到相关执行历史
-                %s
                 当前执行模式：%s
                 %s%s
                 系统提示：%s
@@ -122,7 +122,6 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
                         singleActionMode
                                 ? "- direct/react 必须使用 selected_action 单动作协议；type=tool_call 时只能包含一个 tool_call，type=final_answer 时不得调用工具"
                                 : "- planned 保持 tool_calls 控制动作协议；计划内多步骤由 create_plan/revise_plan 的 plan 载荷表达",
-                        decisionRule,
                         executionMode,
                         modeRules,
                         clarificationRules,
@@ -148,12 +147,12 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
             return """
                     {
                       "decision_summary": {
-                        "current_question": "当前唯一调查问题",
+                        "current_question": "当前调查问题",
                         "hypothesis_updates": [],
                         "next_information_needed": {"gap":"当前唯一信息缺口"},
-                        "action_reason": "为什么当前动作最有信息增益",
-                        "expected_information_gain": "该动作可能支持、反驳或区分什么",
-                        "stop_reason": "继续调查或结束的依据"
+                        "action_reason": "为什么选择当前动作",
+                        "expected_information_gain": "当前动作可能获得什么新信息以及如何影响下一步",
+                        "stop_reason": "继续调查或结束调查的原因"
                       },
                       "selected_action": {
                         "type": "tool_call|final_answer",
@@ -190,16 +189,14 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
         return switch (executionMode == null ? "" : executionMode) {
             case "direct" -> "- direct：围绕单一目标直接执行，不预先规划，也不根据成功的业务证据扩展调查方向；工具失败后可为同一目标选择有限的替代或降级，获得可用结果后立即回答。\n";
             case "react" -> """
-                    - react：下一步业务动作由上一轮观察内容决定；每轮必须填写 decision_summary
-                    - next_information_needed 必须是只含一个 gap 的对象；一轮只解决一个当前信息缺口
-                    - latest_tool_observations 是运行时提供的权威工具事实；不要在 decision_summary 中自行复述 latest_observation
-                    - hypothesis_updates 只输出本轮新增或状态发生变化的假设；没有变化时必须返回空数组，不得重复完整假设列表
-                    - 每个 hypothesis_update 必须包含 update_reason、evidence_strength、directly_relevant 和 evidence_refs
-                    - evidence_refs 必须直接复制 latest_tool_observations 中的 source_step，不得自行拼接工具名和轮次
-                    - 只有与假设直接相关的证据才能把状态改为 supported/weakened；间接或缺失证据必须保持 unverified
+                    - react：只根据已有执行历史、latest_tool_observations 和 active_tool_failures 选择下一步
+                    - 每轮必须输出 decision_summary，作为当轮可审计决策摘要；它不会持久化、合并或参与动作校验
+                    - decision_summary.current_question 表达本轮正在回答的问题，hypothesis_updates 仅记录本轮判断变化，没有变化时返回 []
+                    - next_information_needed 必须是只包含一个非空 gap 的对象；action_reason 说明为何选择当前动作，expected_information_gain 说明该动作会如何影响后续判断
+                    - stop_reason 明确写“继续调查”或本轮结束调查的具体原因
                     - 只有新工具的结果可能改变结论、区分候选解释或解决关键反证时才调用；不得为了覆盖固定维度而依次遍历工具
-                    - action_reason 必须针对当前证据缺口，expected_information_gain 必须说明结果将如何改变判断
-                    - 若没有能显著改变判断的新动作，应填写 stop_reason 并直接输出保守 final_answer
+                    - 已有成功结果没有提供新信息时，不得仅更换参数重复同一种工具策略
+                    - 若没有能显著改变判断的新动作，直接输出保守 final_answer
                     """;
             case "planned" -> planRecoveryRequired
                     ? "- planned 恢复：只能调用 revise_plan；不得重用失败工具入参，即使结果标记 retryable=true；若无有效替代则输出保守 final_answer。\n"

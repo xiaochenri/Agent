@@ -2,6 +2,7 @@ package com.stockmind.application.analysis;
 
 import com.stockmind.application.market.HistoricalBarsQuery;
 import com.stockmind.application.market.MarketDataProvider;
+import com.stockmind.application.market.MarketDataNotFoundException;
 import com.stockmind.application.market.StockTimeWindowResolver;
 import com.stockmind.domain.market.AdjustmentMode;
 import com.stockmind.domain.market.BarDataset;
@@ -262,7 +263,7 @@ public class TechnicalAnalysisService {
                 symbol.trim().toUpperCase(Locale.ROOT), BarInterval.DAY_1, window.startDate(), window.endDate(),
                 parseAdjustment(adjustment)));
         if (dataset.bars().isEmpty()) {
-            throw new IllegalArgumentException("指定时间范围内没有可用的已收盘K线");
+            throw new MarketDataNotFoundException("指定时间范围内没有可用的已收盘K线");
         }
         if (window.warnings().isEmpty()) {
             return dataset;

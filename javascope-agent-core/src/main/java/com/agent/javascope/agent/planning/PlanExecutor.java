@@ -1,6 +1,7 @@
 package com.agent.javascope.agent.planning;
 
 import com.agent.javascope.agent.runtime.RuntimeState;
+import com.agent.javascope.agent.runtime.ToolFailureTracker;
 import com.agent.javascope.agent.support.BusinessDecisionTracker;
 import com.agent.javascope.agent.support.ToolExecutionResultMapper;
 import com.agent.javascope.context.trace.ExecutionEventType;
@@ -15,7 +16,10 @@ import com.agent.javascope.plan.PlanStepStatus;
 import com.agent.javascope.runtime.AgentRuntimeProperties;
 import com.agent.javascope.tool.runtime.AgentToolExecutor;
 import com.agent.javascope.tool.runtime.ToolExecutionResult;
+import com.agent.javascope.tool.runtime.ToolErrorCode;
 import com.agent.javascope.tool.runtime.ToolInvocation;
+import com.agent.javascope.tool.error.DefaultToolErrorClassifier;
+import com.agent.javascope.tool.middleware.ToolResultFactory;
 import com.agent.javascope.tools.validation.StepValidatorTool;
 
 import java.util.ArrayList;
@@ -76,7 +80,8 @@ public class PlanExecutor {
                     && step.getPreviousStepId() != null
                     && !isPreviousStepCompleted(state.planSteps, step.getPreviousStepId())) {
                 String reason = "前置步骤未完成，不能继续执行: " + step.getStepId();
-                recordPreExecutionFailure(state, i, step, reason, "plan_dependency_blocked_" + step.getStepId());
+                recordPreExecutionFailure(state, round, i, step, reason,
+                        "plan_dependency_blocked_" + step.getStepId());
                 failureReasons.add(reason);
                 preExecutionFailureReasons.add(reason);
                 continue;
@@ -84,7 +89,8 @@ public class PlanExecutor {
             List<String> incompleteDependencies = incompleteDependencies(state.planSteps, step.getDependsOnStepIds());
             if (!incompleteDependencies.isEmpty()) {
                 String reason = "显式前置步骤未完成，不能继续执行: " + String.join(",", incompleteDependencies);
-                recordPreExecutionFailure(state, i, step, reason, "plan_dependencies_blocked_" + step.getStepId());
+                recordPreExecutionFailure(state, round, i, step, reason,
+                        "plan_dependencies_blocked_" + step.getStepId());
                 failureReasons.add(reason);
                 preExecutionFailureReasons.add(reason);
                 continue;
@@ -92,7 +98,15 @@ public class PlanExecutor {
             String toolName = step.getToolName();
             if (toolName.isEmpty()) {
                 String reason = "计划步骤缺少 tool: step=" + i;
-                recordPreExecutionFailure(state, i, step, reason, "plan_step_tool_missing_" + i);
+                recordPreExecutionFailure(state, round, i, step, reason, "plan_step_tool_missing_" + i);
+                failureReasons.add(reason);
+                preExecutionFailureReasons.add(reason);
+                continue;
+            }
+            if (state.unavailableTools.contains(toolName)) {
+                String reason = "工具当前依赖不可用，计划步骤禁止重复调用: " + toolName;
+                recordPreExecutionFailure(state, round, i, step, reason,
+                        "plan_step_tool_unavailable_" + toolName);
                 failureReasons.add(reason);
                 preExecutionFailureReasons.add(reason);
                 continue;
@@ -100,14 +114,25 @@ public class PlanExecutor {
             AgentToolDefinition toolDefinition = toolExecutor.getToolDefinition(toolName);
             if (toolDefinition == null) {
                 String reason = "计划步骤使用了未注册工具: " + toolName;
-                recordPreExecutionFailure(state, i, step, reason, "plan_step_tool_unknown_" + i);
+                recordPreExecutionFailure(state, round, i, step, reason, "plan_step_tool_unknown_" + i);
                 failureReasons.add(reason);
                 preExecutionFailureReasons.add(reason);
                 continue;
             }
             if (!toolDefinition.isAllowedInPlanStep()) {
                 String reason = "工具 " + toolName + " 不允许作为计划执行步骤";
-                recordPreExecutionFailure(state, i, step, reason, "plan_step_tool_not_allowed_" + toolName);
+                recordPreExecutionFailure(state, round, i, step, reason,
+                        "plan_step_tool_not_allowed_" + toolName);
+                failureReasons.add(reason);
+                preExecutionFailureReasons.add(reason);
+                continue;
+            }
+            Map<String, Object> toolInput = PlanInputResolver.resolve(step.getInput(), i, state.planSteps);
+            String actionFingerprint = ToolFailureTracker.fingerprint(toolName, toolInput, json);
+            if (state.blockedActionFingerprints.contains(actionFingerprint)) {
+                String reason = "相同 tool+input 已确认失败，计划步骤禁止原样重放: " + toolName;
+                recordPreExecutionFailure(state, round, i, step, reason,
+                        "plan_failed_same_call_blocked_" + toolName);
                 failureReasons.add(reason);
                 preExecutionFailureReasons.add(reason);
                 continue;
@@ -120,7 +145,6 @@ public class PlanExecutor {
                     "depends_on_previous", step.isDependsOnPrevious(),
                     "previous_step_id", step.getPreviousStepId() == null ? "" : step.getPreviousStepId(),
                     "next_step_id", step.getNextStepId() == null ? "" : step.getNextStepId()));
-            Map<String, Object> toolInput = PlanInputResolver.resolve(step.getInput(), i, state.planSteps);
             // 计划内执行也写入统一动作指纹，阻止计划完成后模型再次调用完全相同的工具和参数。
             state.observedActionFingerprints.add(fingerprintStep(toolName, toolInput));
             state.trace.record(ExecutionEventType.TOOL_REQUESTED, Map.of(
@@ -136,6 +160,8 @@ public class PlanExecutor {
                     "tool", toolName,
                     "plan_step", step.getStepId()), resultJson);
             state.executionLog.add(buildToolLog(round, toolName, toolInput, resultJson));
+            ToolFailureTracker.recordResult(
+                    state, round, step.getStepId(), toolName, toolInput, toolResult, json);
             String expectedOutcome = step.getExpectedOutcome();
             if (!toolResult.isSuccess()) {
                 step.setStatus(PlanStepStatus.FAILED);
@@ -253,7 +279,12 @@ public class PlanExecutor {
 
     /** 将执行前校验或依赖失败落为步骤失败，但不阻断后续独立步骤。 */
     private void recordPreExecutionFailure(
-            RuntimeState state, int stepIndex, PlanStepState step, String reason, String riskFlag) {
+            RuntimeState state,
+            int round,
+            int stepIndex,
+            PlanStepState step,
+            String reason,
+            String riskFlag) {
         Map<String, Object> failure = new LinkedHashMap<>();
         failure.put("tool", step.getToolName());
         failure.put("status", "failed");
@@ -261,9 +292,14 @@ public class PlanExecutor {
         failure.put("validation_rules", List.of());
         failure.put("validation_errors", List.of(reason));
         failure.put("retryable", false);
-        failure.put("error_code", "plan_precondition_failed");
+        var toolError = DefaultToolErrorClassifier.INSTANCE.classify(
+                ToolErrorCode.PLAN_PRECONDITION_FAILED, reason, false);
+        failure.put("error_code", toolError.code());
+        failure.put("error", ToolResultFactory.publicError(toolError));
         failure.put("data", null);
         failure.put("metadata", Map.of());
+        ToolFailureTracker.recordFailure(
+                state, round, step.getStepId(), step.getToolName(), step.getInput(), toolError, 1, json);
         step.setStatus(PlanStepStatus.FAILED);
         step.setActualOutput(failure);
         rememberFailedStep(state, step, failure, reason);

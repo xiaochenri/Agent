@@ -30,7 +30,7 @@ public class StockAnalysisTools extends StockToolSupport {
             description = "唯一面向用户的分析工具。规整 quote_data、technical_data、bars_data、news_data、fundamental_data，校验时间/来源/数据模式后输出结论、证据、冲突和局限；不重新计算指标。")
     public String stockSnapshotAnalysis(Map<String, Object> input, String raw) {
         String symbol = symbol(input, raw);
-        if (symbol.isBlank()) return fail("stock_snapshot_analysis", "symbol 不能为空", false);
+        if (symbol.isBlank()) return fail("stock_snapshot_analysis", StockToolError.SYMBOL_REQUIRED);
 
         StockEvidenceBundle bundle = new StockEvidenceBundle(
                 symbol.toUpperCase(),

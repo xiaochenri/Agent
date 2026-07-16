@@ -114,9 +114,7 @@ ToolRegistry -> ToolAuthorizationPolicy -> ToolMiddlewareChain -> ToolInvoker
 
 “发生多次工具调用”不自动等于 `react` 或 `planned`。direct 可以在主工具失败后围绕同一目标进行有限替代或降级，但不能根据成功返回的业务证据扩展调查方向；如果下一步业务动作必须随中间内容调整，使用 `react`；如果第一次工具调用之前就能可靠写出完整可执行工具链，使用 `planned`。planned 首轮只暴露 `clarify_requirement` 与 `create_plan` 并要求二选一，react/direct 则从工具列表和运行时两层屏蔽 `create_plan`、`revise_plan`。
 
-direct/react 使用 `selected_action` 单动作协议，每轮只能选择一个 `tool_call` 或 `final_answer`；planned 继续使用控制动作和计划步骤协议。react 每轮同时输出简洁的 `decision_summary`，记录当前调查问题、候选解释增量、唯一信息缺口、动作依据和预期信息增益。运行时将其合并为 `investigation_state` 并传入下一轮；工具观察由运行时单独提供。新工具只有在可能改变判断、区分候选解释或解决关键反证时才应调用，避免按工具类别进行固定巡检。该结构是可审计决策摘要，不要求或保存模型的完整思维过程。
-
-react 的 `hypothesis_updates` 只返回本轮新增或实际发生变化的假设，没有变化时返回空数组；运行时把增量合并进持久化的 `hypotheses`。每次更新必须声明 `update_reason`、`evidence_strength`、`directly_relevant` 和 `evidence_refs`。只有直接相关且具有实际引用的证据可以把假设改为 `supported` 或 `weakened`；间接证据和未获得的证据只能保持 `unverified`。工具事实统一来自运行时生成的 `latest_tool_observations`，模型不再维护一份重复的 `latest_observation`。`next_information_needed` 只能包含一个 `gap`，确保一轮只解决一个调查问题。
+direct/react 使用 `selected_action` 单动作协议，每轮只能选择一个 `tool_call` 或 `final_answer`；planned 继续使用控制动作和计划步骤协议。react 直接根据执行历史、`latest_tool_observations` 和 `active_tool_failures` 选择下一步，不维护额外的跨轮调查状态；每轮额外输出轻量 `decision_summary` 供日志审计，但不持久化、不合并，也不参与动作校验。
 
 direct、planned 和 react 共用固定的 10 轮 Action/Observation 循环；被协议校验、重复动作或运行时门禁拒绝的动作同样消耗当前轮次。
 

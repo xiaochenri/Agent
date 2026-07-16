@@ -1,5 +1,8 @@
 package com.agent.javascope.entity.tool;
 
+import com.agent.javascope.tool.error.DefaultToolErrorClassifier;
+import com.agent.javascope.tool.middleware.ToolResultFactory;
+import com.agent.javascope.tool.runtime.ToolErrorCode;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -26,6 +29,8 @@ public class ToolResultPayload {
     /** 结构化错误码，便于框架或业务侧做失败分类。 */
     @JsonProperty("error_code")
     private String errorCode = "";
+    /** 统一结构化错误，仅失败结果存在。 */
+    private Map<String, Object> error;
     /** 工具业务数据。不同工具返回结构不同，因此保留为对象。 */
     private Object data;
     /** 工具调用元数据，例如 trace_id、duration_ms、source、cache_hit、warnings。 */
@@ -55,7 +60,16 @@ public class ToolResultPayload {
     }
 
     public static ToolResultPayload failed(String tool, List<String> validationErrors, Object data) {
-        return new ToolResultPayload(tool, "failed", false, List.of(), validationErrors, false, data);
+        ToolResultPayload payload = new ToolResultPayload(
+                tool, "failed", false, List.of(), validationErrors, false, data);
+        String publicMessage = validationErrors == null || validationErrors.isEmpty()
+                ? "计划工具校验失败"
+                : validationErrors.getFirst();
+        var toolError = DefaultToolErrorClassifier.INSTANCE.classify(
+                ToolErrorCode.PLAN_VALIDATION_FAILED, publicMessage, false);
+        payload.setErrorCode(toolError.code());
+        payload.setError(ToolResultFactory.publicError(toolError));
+        return payload;
     }
 
     public String getTool() {
@@ -120,6 +134,14 @@ public class ToolResultPayload {
 
     public void setErrorCode(String errorCode) {
         this.errorCode = errorCode == null ? "" : errorCode;
+    }
+
+    public Map<String, Object> getError() {
+        return error;
+    }
+
+    public void setError(Map<String, Object> error) {
+        this.error = error == null ? null : new LinkedHashMap<>(error);
     }
 
     public Map<String, Object> getMetadata() {

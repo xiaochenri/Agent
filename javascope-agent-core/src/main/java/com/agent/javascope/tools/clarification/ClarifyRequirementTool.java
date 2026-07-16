@@ -1,5 +1,8 @@
 package com.agent.javascope.tools.clarification;
 
+import com.agent.javascope.tool.error.DefaultToolErrorClassifier;
+import com.agent.javascope.tool.middleware.ToolResultFactory;
+import com.agent.javascope.tool.runtime.ToolErrorCode;
 import com.agent.javascope.tool.runtime.ClarificationBusinessProvider;
 import com.agent.javascope.tool.annotation.AgentTool;
 import com.agent.javascope.tool.annotation.ToolType;
@@ -92,7 +95,8 @@ public class ClarifyRequirementTool {
                 outcomeImpacts,
                 declaredSlots);
         if (!semanticPolicyError.isBlank()) {
-            return fail("clarify_requirement", semanticPolicyError, true);
+            return fail("clarify_requirement", ToolErrorCode.CLARIFICATION_POLICY_REJECTED,
+                    semanticPolicyError, false);
         }
 
         // Core 只处理模型声明的抽象槽位，不内置任何领域槽位或关键词识别。
@@ -436,26 +440,38 @@ public class ClarifyRequirementTool {
             payload.put("validation_rules", rules);
             payload.put("validation_errors", List.of());
             payload.put("retryable", false);
+            payload.put("error_code", "");
             payload.put("data", data);
+            payload.put("metadata", Map.of());
             return OBJECT_MAPPER.writeValueAsString(payload);
         } catch (JsonProcessingException e) {
-            return fail(toolName, "json 序列化失败", false);
+            return fail(toolName, ToolErrorCode.TOOL_RESULT_INVALID_JSON,
+                    "澄清工具结果序列化失败", false);
         }
     }
 
-    private String fail(String toolName, String error, boolean retryable) {
+    /** 构建澄清工具的统一结构化失败载荷。 */
+    private String fail(String toolName, ToolErrorCode code, String error, boolean retryable) {
         try {
+            var toolError = DefaultToolErrorClassifier.INSTANCE.classify(code, error, retryable);
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("tool", toolName);
             payload.put("status", "failed");
             payload.put("validation_passed", false);
             payload.put("validation_rules", List.of());
             payload.put("validation_errors", List.of(error));
-            payload.put("retryable", retryable);
+            payload.put("retryable", toolError.retryable());
+            payload.put("error_code", toolError.code());
+            payload.put("error", ToolResultFactory.publicError(toolError));
             payload.put("data", null);
+            payload.put("metadata", Map.of());
             return OBJECT_MAPPER.writeValueAsString(payload);
         } catch (JsonProcessingException ignored) {
-            return "{\"tool\":\"clarify_requirement\",\"status\":\"failed\",\"retryable\":false}";
+            return "{\"tool\":\"clarify_requirement\",\"status\":\"failed\",\"validation_passed\":false,"
+                    + "\"validation_rules\":[],\"validation_errors\":[\"澄清工具返回失败\"],"
+                    + "\"retryable\":false,\"error_code\":\""
+                    + ToolErrorCode.TOOL_RESULT_INVALID_JSON.code() + "\","
+                    + "\"data\":null,\"metadata\":{}}";
         }
     }
 

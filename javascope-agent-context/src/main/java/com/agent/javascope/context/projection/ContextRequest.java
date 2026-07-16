@@ -14,8 +14,8 @@ public record ContextRequest(
         JsonNode ephemeralMemory,
         /** 业务工具上报的通用决策状态，应优先于普通历史日志展示。 */
         JsonNode businessDecisions,
-        /** ReAct 最近一次可审计调查状态，由 Action Model 更新并在轮次间持续传递。 */
-        JsonNode investigationState,
+        /** 尚未解除的最终工具失败；必须独立于普通历史和最新观察持续传递。 */
+        JsonNode activeToolFailures,
         /** 最近一次校验或执行失败生成的修正约束。 */
         String validationFeedback,
         /** 当前执行过程中累积的风险标记。 */
@@ -27,12 +27,12 @@ public record ContextRequest(
         Objects.requireNonNull(executionLog, "executionLog must not be null");
         Objects.requireNonNull(ephemeralMemory, "ephemeralMemory must not be null");
         Objects.requireNonNull(businessDecisions, "businessDecisions must not be null");
-        Objects.requireNonNull(investigationState, "investigationState must not be null");
+        Objects.requireNonNull(activeToolFailures, "activeToolFailures must not be null");
         validationFeedback = validationFeedback == null ? "" : validationFeedback;
         Objects.requireNonNull(riskFlags, "riskFlags must not be null");
     }
 
-    /** 兼容未提供 ReAct 调查状态的既有上下文调用方。 */
+    /** 兼容尚未提供活跃工具失败区域的既有上下文调用方。 */
     public ContextRequest(
             JsonNode currentPlan,
             JsonNode executionLog,
@@ -41,6 +41,6 @@ public record ContextRequest(
             String validationFeedback,
             JsonNode riskFlags) {
         this(currentPlan, executionLog, ephemeralMemory, businessDecisions,
-                JsonNodeFactory.instance.objectNode(), validationFeedback, riskFlags);
+                JsonNodeFactory.instance.arrayNode(), validationFeedback, riskFlags);
     }
 }
