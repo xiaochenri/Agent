@@ -6,8 +6,9 @@ import com.stockmind.common.vector.OceanBaseVectorStore;
 import com.stockmind.common.vector.TextVectorBuilder;
 import com.stockmind.common.vector.VectorSearchResult;
 import com.stockmind.application.market.StockTimeWindowResolver;
+import com.stockmind.application.news.NewsArticle;
+import com.stockmind.application.news.NewsProvider;
 
-import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -38,14 +39,17 @@ public class ResearchEvidenceTools extends StockToolSupport {
             {"type":"object","properties":{"tool":{"type":"string","enum":["financial_report_metrics"]},"status":{"type":"string","enum":["success","failed"]},"validation_passed":{"type":"boolean"},"validation_rules":{"type":"array","items":{"type":"string"}},"validation_errors":{"type":"array","items":{"type":"string"}},"retryable":{"type":"boolean"},"error_code":{"type":"string"},"data":{"type":"object","properties":{"symbol":{"type":"string"},"report_period":{"type":"string","format":"date"},"report_type":{"type":"string","enum":["Q1","H1","Q3","ANNUAL"]},"net_profit":{"type":["number","null"]},"total_shares":{"type":["number","null"]},"reported_basic_eps":{"type":["number","null"]},"currency":{"type":"string"},"source":{"type":"string"},"source_documents":{"type":"array","items":{"type":"object"}},"missing_fields":{"type":"array","items":{"type":"string"}},"calculation_ready":{"type":"boolean"},"data_quality":{"type":"string","enum":["valid","partial","invalid"]}},"required":["symbol","report_period","report_type","net_profit","total_shares","reported_basic_eps","currency","source","source_documents","missing_fields","calculation_ready","data_quality"],"additionalProperties":false},"metadata":{"type":"object"}},"required":["tool","status","validation_passed","validation_rules","validation_errors","retryable","error_code","data","metadata"],"additionalProperties":false}
             """;
     private final OceanBaseVectorStore vectorStore;
+    private final NewsProvider newsProvider;
     private final int vectorDimensions;
     private final int defaultTopK;
 
     public ResearchEvidenceTools(DataSource dataSource,
+                                 NewsProvider newsProvider,
                                  @Value("${stockmind.knowledge.vector.table:stock_doc_vector}") String table,
                                  @Value("${stockmind.knowledge.vector.dimensions:1024}") int dimensions,
                                  @Value("${stockmind.knowledge.vector.default-top-k:5}") int defaultTopK) {
         this.vectorStore = new OceanBaseVectorStore(dataSource, table, dimensions);
+        this.newsProvider = newsProvider;
         this.vectorDimensions = dimensions;
         this.defaultTopK = Math.max(1, defaultTopK);
     }
@@ -61,15 +65,36 @@ public class ResearchEvidenceTools extends StockToolSupport {
         } catch (IllegalArgumentException error) {
             return fail("news_search", StockToolError.INVALID_TIME_WINDOW);
         }
-        Map<String, Object> data = new LinkedHashMap<>();
-        data.put("keyword", keyword);
-        data.put("time_window", window.display());
-        data.put("start_date", window.startDate().toString());
-        data.put("end_date", window.endDate().toString());
-        data.put("warnings", window.warnings());
-        data.put("source", "stockmind_news");
-        data.put("items", List.of(Map.of("id", "news-1", "title", keyword + " 的市场关注度变化", "published_at", LocalDate.now().minusDays(2).toString(), "summary", "市场关注度与相关事件摘要。")));
-        return success("news_search", data, "[\"keyword 非空\",\"返回结构化新闻条目\"]");
+        try {
+            List<NewsArticle> articles = newsProvider.search(keyword, window.startDate(), window.endDate(), 30);
+            List<Map<String, Object>> items = new ArrayList<>();
+            for (NewsArticle article : articles) {
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("id", article.id());
+                item.put("title", article.title());
+                item.put("published_at", article.publishedAt().toString());
+                item.put("summary", article.summary());
+                item.put("source", article.source());
+                item.put("url", article.url());
+                items.add(item);
+            }
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("keyword", keyword);
+            data.put("time_window", window.display());
+            data.put("start_date", window.startDate().toString());
+            data.put("end_date", window.endDate().toString());
+            data.put("warnings", window.warnings());
+            data.put("source", "eastmoney_search_api");
+            data.put("data_mode", "live_api");
+            data.put("result_quality", items.isEmpty() ? "no_matches" : "valid");
+            data.put("returned_count", items.size());
+            data.put("items", items);
+            return success("news_search", data,
+                    "[\"keyword 非空\",\"新闻来自真实公开接口\",\"结果按请求时间窗过滤\"]");
+        } catch (Exception e) {
+            logInternalFailure("news_search", e);
+            return fail("news_search", StockToolError.NEWS_SERVICE_UNAVAILABLE);
+        }
     }
 
     @AgentTool(name = "knowledge_search", title = "知识库检索", namespace = "finance.knowledge", category = "knowledge_search", tags = {"stock", "financial_report", "readonly"}, inputSchema = KNOWLEDGE_SCHEMA, description = "检索财报、年报和公告证据。")

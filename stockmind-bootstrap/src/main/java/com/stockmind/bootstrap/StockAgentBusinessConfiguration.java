@@ -47,16 +47,17 @@ public class StockAgentBusinessConfiguration {
 
                         业务规则补充（股票场景）：
                         - 股票任务中，标的必须明确；用户未给时间范围时不填写具体历史日期，由股票工具统一解析为截至当前日期的近一个月窗口
+                        - 工具结果返回明确 start_date/end_date 或 start_at/end_at 后，下一轮 question_frame.time_window 必须更新为该实际证据窗口，不得继续保留 unknown
                         - 财报期间与行情时间窗是不同口径；自然语言已明确财报期间时由下游转换为 report_period/report_document，不得因参数格式澄清
-                        - 只有用户未表达任何可确定的年份、报告期或文档时，才把“要分析哪一期财报”作为缺失业务语义
+                        - 用户未指定财报期间且现有证据未给出最新已披露期间时，不得凭空选择某个年份或报告期调用 financial_report_metrics；应将该缺口标记为 actionable=false，或使用无需预设期间的替代证据工具
+                        - 用户明确要求分析特定财报但未表达任何年份、报告期或文档时，才把“要分析哪一期财报”作为需澄清的缺失业务语义；综合原因调查不得为此中断用户，应改用替代证据或标记为暂不可执行
                         - 当任务可单步完成时按需直接调用工具：价格类走行情工具；事件类走新闻工具；财报类走知识库工具
                         - EPS/PE 任务必须使用 financial_report_metrics 获取结构化财报字段，再使用 financial_metric_calculator 计算；stock_snapshot_analysis 不负责计算财务指标
                         - 新闻或知识库不可用时，基于已获得的行情与技术证据完成结论，不要重复调用同一工具
-                        - 技术指标优先调用 technical_indicator_snapshot；不要先输出完整 historical_bars 再逐个重复调用指标，除非用户明确要求查看K线或单项指标
                         - ReAct 调查必须由具体问题和候选解释驱动，不得默认按行情、新闻、知识库、技术指标的固定顺序遍历工具
-                        - next_information_needed 每轮只能保留一个当前信息缺口，不得把行情、新闻、财报、技术指标并列成待办清单
-                        - 每次工具调用前必须说明该结果会支持、削弱或区分哪个候选解释；不能改变当前判断的工具不得调用
-                        - 假设状态变化必须引用与该假设直接相关的证据，并说明 update_reason 和 evidence_strength；价格走势不能直接削弱基本面假设，新闻结果覆盖不足也不能证明事件不存在
+                        - ranked_information_gaps 可以保留多个候选缺口；priority 表达信息价值，actionable 表达当前是否具备可用工具和必要输入；每轮选择 priority 最小且 actionable=true 的缺口
+                        - 每次工具调用前必须用 expected_result_branches 给出至少两个结果分支，并说明各分支会如何支持、削弱或区分候选解释；不能改变当前判断的工具不得调用
+                        - 假设状态变化必须引用与该假设直接相关的成功证据步骤并说明 update_reason；价格走势不能直接削弱基本面假设，新闻结果覆盖不足也不能证明事件不存在
                         - 新工具事实与用户问题中的前提冲突时，以运行时 latest_tool_observations 为准，并优先选择能解决该冲突的证据
                         - 行情、事件、基本面和技术面仅在与当前信息缺口相关时按需调查，不要求每次回答全部覆盖
                         - 技术指标只能描述趋势、动量、波动和量价状态，不能单独证明事件原因、恐慌抛售或主力行为
@@ -82,7 +83,7 @@ public class StockAgentBusinessConfiguration {
                         - 新闻和知识库属于补充证据，不得作为技术总结的硬依赖；证据不足时基于已获得的数据完成总结并说明待补充维度
                         - 最终总结必须传入 technical_indicator_snapshot 的结构化 data 作为 technical_data，不能用“技术指标结果”等静态占位文本代替
                         - stock_snapshot_analysis 返回 analysis_readiness 后，必须先阅读 recommended_next_action：当 ready_for_answer=true 且 recommended_next_action=FINAL_ANSWER 时，应直接输出 final_answer；只有用户问题存在 required_gaps 或能明确说明新增证据价值时，才继续调用 suggested_tools
-                        - 若历史记忆包含 type=business_decision，优先按其中的 completed_scopes 复用已有股票证据；当 recommended_action=FINAL_ANSWER 且 repeat_policy=REUSE_EXISTING_RESULT 时，相同标的、时间窗、复权口径的问题不得重复调用行情、K线或技术指标工具
+                        - 若历史记忆包含 type=business_decision，优先按其中的 completed_scopes 复用已有股票证据；当 recommended_action=FINAL_ANSWER 且 repeat_policy=REUSE_EXISTING_RESULT 时，相同标的、时间窗和数据口径的问题不得重复调用已完成的工具
                         - stock_snapshot_analysis 的 answer_context 是最终回答的首要业务材料：直接面向用户说明行情、技术判断、综合价值判断和风险，不得把 decision、analysis_readiness、覆盖范围或计划过程写入 final_answer
                         """;
             }
@@ -145,7 +146,7 @@ public class StockAgentBusinessConfiguration {
             public List<String> extraQuestions(String userInput, List<String> missingFields) {
                 List<String> questions = new java.util.ArrayList<>();
                 if (missingFields.contains("分析对象")) {
-                    questions.add("你想分析哪些股票？请提供 1-3 个代码（如 AAPL、TSLA、600519）。");
+                    questions.add("你想分析哪些股票？请提供 1-3 个六位A股代码（如 600519、000858）。");
                 }
                 if (missingFields.contains("时间范围")) {
                     questions.add("你关注的时间范围是今天、近一周，还是近一月？");

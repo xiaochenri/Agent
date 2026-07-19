@@ -84,6 +84,7 @@ public abstract class Agent {
             String validationFeedback,
             List<Map<String, Object>> businessDecisions,
             List<Map<String, Object>> activeToolFailures,
+            Map<String, Object> investigationState,
             Map<String, Object> response) {
         return new AgentExecutionLogEntry(
                 "reasoning_round_" + round,
@@ -92,7 +93,8 @@ public abstract class Agent {
                         "user_input", input,
                         "validation_feedback", validationFeedback,
                         "business_decisions", List.copyOf(businessDecisions),
-                        "active_tool_failures", List.copyOf(activeToolFailures)),
+                        "active_tool_failures", List.copyOf(activeToolFailures),
+                        "investigation_state", Map.copyOf(investigationState)),
                 response,
                 0.6);
     }

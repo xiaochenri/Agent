@@ -76,12 +76,16 @@ public final class ToolFailureRecoveryAcceptanceTest {
                 Map.of("period", "1900Q2"), failed("REPORT_NOT_FOUND", "未找到指定期间的财报"), json);
 
         ContextRequest request = new ContextRequest(
-                json.toTree(List.of()), json.toTree(List.of()), json.toTree(List.of()),
+                json.toTree(List.of()),
+                json.toTree(Map.of("question_frame", Map.of("target", "贵州茅台"))),
+                json.toTree(List.of()), json.toTree(List.of()),
                 json.toTree(List.of()), json.toTree(state.activeToolFailures.values().stream()
                         .map(ToolFailureRecord::toPublicMap).toList()),
                 "必须遵循活跃失败恢复动作", json.toTree(List.of()));
         WorkingContext context = new InMemoryContextManager().project(request, new PromptBudget(1_000, 1, 1));
         require(context.activeToolFailures().size() == 2, "活跃失败被 latest-tool 去重或 evidence 窗口裁掉");
+        require("贵州茅台".equals(context.investigationState().path("question_frame").path("target").asText()),
+                "跨轮调查状态在上下文投影中丢失");
 
         String prompt = new DefaultPromptAssembler(json).assembleActionPrompt(
                 new DefaultAgentPromptProvider(), "系统规则", "查询财报", "planned", List.of(),
@@ -93,9 +97,14 @@ public final class ToolFailureRecoveryAcceptanceTest {
         String reactPrompt = new DefaultPromptAssembler(json).assembleActionPrompt(
                 new DefaultAgentPromptProvider(), "系统规则", "分析下跌原因", "react", List.of(),
                 context, new PromptBudget(10_000, 1, 1));
-        require(reactPrompt.contains("\"decision_summary\""), "ReAct Prompt 缺少轻量决策摘要协议");
+        require(reactPrompt.contains("\"reasoning_update\""), "ReAct Prompt 缺少结构化调查更新协议");
         require(reactPrompt.contains("\"hypothesis_updates\""), "ReAct 决策摘要缺少判断更新字段");
-        require(reactPrompt.contains("\"next_information_needed\""), "ReAct 决策摘要缺少下一信息缺口");
+        require(reactPrompt.contains("\"ranked_information_gaps\""), "ReAct 调查更新缺少排序信息缺口");
+        require(reactPrompt.contains("\"expected_result_branches\""), "ReAct 调查更新缺少结果分支");
+        require(reactPrompt.contains("\"actionable\""), "ReAct 调查更新缺少信息缺口可执行性");
+        require(reactPrompt.contains("\"selected_tool\""), "ReAct 调查更新缺少声明工具字段");
+        require(reactPrompt.contains("\"investigation_state\""), "ReAct Prompt 缺少跨轮调查状态");
+        require(reactPrompt.contains("贵州茅台"), "预算裁剪后跨轮调查状态内容不可达");
     }
 
     private ToolExecutionResult failed(String code, String message) {

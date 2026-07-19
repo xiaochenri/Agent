@@ -146,13 +146,56 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
         if ("react".equals(executionMode)) {
             return """
                     {
-                      "decision_summary": {
-                        "current_question": "当前调查问题",
-                        "hypothesis_updates": [],
-                        "next_information_needed": {"gap":"当前唯一信息缺口"},
-                        "action_reason": "为什么选择当前动作",
-                        "expected_information_gain": "当前动作可能获得什么新信息以及如何影响下一步",
-                        "stop_reason": "继续调查或结束调查的原因"
+                      "reasoning_update": {
+                        "question_frame": {
+                          "target": "调查对象",
+                          "phenomenon": "需要解释或判断的现象",
+                          "time_window": "时间范围；未知时明确写 unknown",
+                          "benchmark": "比较基准；不适用时明确写 none"
+                        },
+                        "new_observations": [
+                          {
+                            "source_step": "真实存在的 tool_call_round_N；首轮无观察时返回空数组",
+                            "fact": "工具结果直接支持的新事实，不得写推测",
+                            "reliability": "high|medium|low",
+                            "relevance": "该事实能支持、削弱或区分什么"
+                          }
+                        ],
+                        "hypothesis_updates": [
+                          {
+                            "hypothesis_id": "稳定 ID，例如 H1",
+                            "claim": "候选解释；新假设必填，已有假设可原样保留",
+                            "status": "open|supported|weakened|rejected",
+                            "confidence": 0.0,
+                            "supporting_evidence": [],
+                            "contradicting_evidence": [],
+                            "missing_evidence": ["仍需什么证据"],
+                            "update_reason": "本轮为何更新或保持不变"
+                          }
+                        ],
+                        "contradiction_check": ["当前主判断面临的反证或尚不能排除的替代解释"],
+                        "ranked_information_gaps": [
+                          {
+                            "gap":"未解决的信息缺口",
+                            "priority":1,
+                            "actionable":true,
+                            "blocked_reason":"可执行时为空字符串；不可执行时说明原因",
+                            "reason":"为何它最能区分候选假设"
+                          }
+                        ],
+                        "action_decision": {
+                          "selected_gap": "必须是最高优先级的 actionable=true 缺口；结束时可为空字符串",
+                          "selected_tool": "必须与 selected_action.tool_call.name 完全一致；结束时可为空字符串",
+                          "why_now": "为何本轮优先解决此缺口",
+                          "expected_result_branches": [
+                            {"if":"工具出现结果 A","then":"将如何更新哪些假设"},
+                            {"if":"工具出现不同的结果 B","then":"将如何更新哪些假设"}
+                          ]
+                        },
+                        "stop_assessment": {
+                          "should_stop": false,
+                          "reason": "证据是否已经足以回答；不能只写继续调查"
+                        }
                       },
                       "selected_action": {
                         "type": "tool_call|final_answer",
@@ -189,14 +232,21 @@ public class DefaultAgentPromptProvider implements AgentPromptProvider {
         return switch (executionMode == null ? "" : executionMode) {
             case "direct" -> "- direct：围绕单一目标直接执行，不预先规划，也不根据成功的业务证据扩展调查方向；工具失败后可为同一目标选择有限的替代或降级，获得可用结果后立即回答。\n";
             case "react" -> """
-                    - react：只根据已有执行历史、latest_tool_observations 和 active_tool_failures 选择下一步
-                    - 每轮必须输出 decision_summary，作为当轮可审计决策摘要；它不会持久化、合并或参与动作校验
-                    - decision_summary.current_question 表达本轮正在回答的问题，hypothesis_updates 仅记录本轮判断变化，没有变化时返回 []
-                    - next_information_needed 必须是只包含一个非空 gap 的对象；action_reason 说明为何选择当前动作，expected_information_gain 说明该动作会如何影响后续判断
-                    - stop_reason 明确写“继续调查”或本轮结束调查的具体原因
-                    - 只有新工具的结果可能改变结论、区分候选解释或解决关键反证时才调用；不得为了覆盖固定维度而依次遍历工具
+                    - react：每轮先读取 investigation_state 和最新工具观察，再输出 reasoning_update；运行时会把有效更新合并进下一轮 investigation_state
+                    - 固定推理顺序：提取新增事实 -> 更新候选假设 -> 检查反证与替代解释 -> 排列信息缺口 -> 判断可执行性 -> 说明结果分支 -> 判断是否停止 -> 选择动作
+                    - 首轮必须建立至少两个可区分的候选假设；后续轮次只根据新增证据更新，不得把未获得证据误写成反证
+                    - new_observations 只能记录工具结果直接支持的事实，source_step 必须引用真实存在且成功通过校验的 tool_call_round_N；首轮必须返回 []
+                    - hypothesis_id 必须跨轮稳定；置信度或 status 变化必须在 update_reason 中说明证据依据；没有变化也要说明为何当前证据不能区分
+                    - supporting_evidence 和 contradicting_evidence 只填写 source_step（如 tool_call_round_3）；若混入解释文字，运行时会提取步骤 ID，解释应写入 update_reason
+                    - ranked_information_gaps 按信息价值设置 priority，同时必须标注 actionable；工具或必要输入当前不可用时 actionable=false 并填写 blocked_reason
+                    - 选择工具时 selected_gap 必须是 priority 最小的 actionable=true 缺口；允许跳过价值更高但当前不可执行的缺口，避免被阻塞项卡死
+                    - action_decision.selected_tool 必须与 selected_action.tool_call.name 完全一致；why_now 必须解释该工具如何解决 selected_gap
+                    - type=tool_call 时 expected_result_branches 至少包含两个可区分结果及其假设更新方向，说明结果如何改变判断；不得只写“获得更多信息”
+                    - 首轮尚无证据和倾向性判断时 contradiction_check 可以返回 []；后续轮次必须主动列出当前判断的反证或尚未排除的替代解释
+                    - 只有新工具结果可能改变结论、区分候选解释或解决关键反证时才调用；不得为了覆盖固定维度而依次遍历工具
+                    - selected_tool 已被 active_tool_failures 标记为依赖不可用，或相同 tool+input 已被 blocked_same_call 标记时，不得选择；必须换可执行缺口或保守结束
                     - 已有成功结果没有提供新信息时，不得仅更换参数重复同一种工具策略
-                    - 若没有能显著改变判断的新动作，直接输出保守 final_answer
+                    - 若没有能显著改变判断的新动作，stop_assessment.should_stop=true 并输出保守 final_answer；final_answer 必须与 investigation_state 中的证据强度一致
                     """;
             case "planned" -> planRecoveryRequired
                     ? "- planned 恢复：只能调用 revise_plan；不得重用失败工具入参，即使结果标记 retryable=true；若无有效替代则输出保守 final_answer。\n"

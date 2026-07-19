@@ -7,6 +7,8 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 public record WorkingContext(
         /** 当前任务的计划快照。 */
         JsonNode currentPlan,
+        /** ReAct 跨轮调查状态；属于不可裁剪的核心决策上下文。 */
+        JsonNode investigationState,
         /** 从完整日志中选出的相关历史事件。 */
         JsonNode relevantHistory,
         /** 本轮必须遵守的失败反馈、短期记忆和风险约束。 */
@@ -25,7 +27,7 @@ public record WorkingContext(
             JsonNode activeConstraints,
             JsonNode evidenceSummaries,
             JsonNode latestObservations) {
-        this(currentPlan, relevantHistory, activeConstraints, evidenceSummaries,
+        this(currentPlan, JsonNodeFactory.instance.objectNode(), relevantHistory, activeConstraints, evidenceSummaries,
                 latestObservations, JsonNodeFactory.instance.arrayNode());
     }
 
@@ -35,7 +37,7 @@ public record WorkingContext(
             JsonNode relevantHistory,
             JsonNode activeConstraints,
             JsonNode evidenceSummaries) {
-        this(currentPlan, relevantHistory, activeConstraints, evidenceSummaries,
+        this(currentPlan, JsonNodeFactory.instance.objectNode(), relevantHistory, activeConstraints, evidenceSummaries,
                 JsonNodeFactory.instance.arrayNode(), JsonNodeFactory.instance.arrayNode());
     }
 }

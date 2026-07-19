@@ -6,10 +6,14 @@ import com.agent.javascope.tool.runtime.ToolError;
 import com.agent.javascope.tool.runtime.ToolErrorCategory;
 import com.agent.javascope.tool.runtime.ToolErrorClassifier;
 import com.agent.javascope.tool.runtime.ToolErrorCode;
-import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.net.ConnectException;
+import java.net.NoRouteToHostException;
+import java.net.SocketException;
 import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
+import java.net.http.HttpTimeoutException;
+import java.nio.channels.UnresolvedAddressException;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CancellationException;
@@ -41,11 +45,17 @@ public final class DefaultToolErrorClassifier implements ToolErrorClassifier {
             return build(ToolErrorCategory.CANCELLED, ToolErrorCode.TOOL_CANCELLED,
                     "工具调用已取消", false, exceptionType);
         }
-        if (cause instanceof TimeoutException || cause instanceof SocketTimeoutException) {
+        if (cause instanceof TimeoutException
+                || cause instanceof SocketTimeoutException
+                || cause instanceof HttpTimeoutException) {
             return build(ToolErrorCategory.TIMEOUT, ToolErrorCode.TOOL_TIMEOUT,
                     "工具调用超时", true, exceptionType);
         }
-        if (cause instanceof ConnectException || cause instanceof IOException) {
+        if (cause instanceof ConnectException
+                || cause instanceof NoRouteToHostException
+                || cause instanceof UnknownHostException
+                || cause instanceof SocketException
+                || cause instanceof UnresolvedAddressException) {
             return build(ToolErrorCategory.NETWORK_ERROR, ToolErrorCode.TOOL_NETWORK_ERROR,
                     "工具依赖网络暂时不可用", true, exceptionType);
         }
@@ -65,7 +75,7 @@ public final class DefaultToolErrorClassifier implements ToolErrorClassifier {
         if (code.contains("CONFIRMATION_REQUIRED")) return ToolErrorCategory.AUTH_CONFIRMATION_REQUIRED;
         if (code.contains("NOT_AUTHORIZED") || code.contains("UNAUTHORIZED")) return ToolErrorCategory.NOT_AUTHORIZED;
         if (code.contains("RATE_LIMIT")) return ToolErrorCategory.RATE_LIMITED;
-        if (code.contains("TIMEOUT")) return ToolErrorCategory.TIMEOUT;
+        if (code.contains("TIMEOUT") || code.contains("DEADLINE")) return ToolErrorCategory.TIMEOUT;
         if (code.contains("NETWORK") || code.contains("CONNECTION")) return ToolErrorCategory.NETWORK_ERROR;
         if (code.contains("CIRCUIT_OPEN")) return ToolErrorCategory.CIRCUIT_OPEN;
         if (code.contains("BULKHEAD")) return ToolErrorCategory.BULKHEAD_REJECTED;

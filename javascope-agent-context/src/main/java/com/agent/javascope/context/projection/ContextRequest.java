@@ -8,6 +8,8 @@ import java.util.Objects;
 public record ContextRequest(
         /** 当前生效计划的通用 JSON 表示。 */
         JsonNode currentPlan,
+        /** ReAct 跨轮累积的调查状态；不得被普通历史窗口裁掉。 */
+        JsonNode investigationState,
         /** 当前执行的完整日志快照；上下文管理器只会选取其中相关片段。 */
         JsonNode executionLog,
         /** 仅供下一轮使用的短期记忆或提示。 */
@@ -24,6 +26,7 @@ public record ContextRequest(
     /** 将可选文本归一化，并确保所有 JSON 载荷均存在。 */
     public ContextRequest {
         Objects.requireNonNull(currentPlan, "currentPlan must not be null");
+        Objects.requireNonNull(investigationState, "investigationState must not be null");
         Objects.requireNonNull(executionLog, "executionLog must not be null");
         Objects.requireNonNull(ephemeralMemory, "ephemeralMemory must not be null");
         Objects.requireNonNull(businessDecisions, "businessDecisions must not be null");
@@ -40,7 +43,20 @@ public record ContextRequest(
             JsonNode businessDecisions,
             String validationFeedback,
             JsonNode riskFlags) {
-        this(currentPlan, executionLog, ephemeralMemory, businessDecisions,
+        this(currentPlan, JsonNodeFactory.instance.objectNode(), executionLog, ephemeralMemory, businessDecisions,
                 JsonNodeFactory.instance.arrayNode(), validationFeedback, riskFlags);
+    }
+
+    /** 兼容提供活跃失败、但尚未提供调查状态的调用方。 */
+    public ContextRequest(
+            JsonNode currentPlan,
+            JsonNode executionLog,
+            JsonNode ephemeralMemory,
+            JsonNode businessDecisions,
+            JsonNode activeToolFailures,
+            String validationFeedback,
+            JsonNode riskFlags) {
+        this(currentPlan, JsonNodeFactory.instance.objectNode(), executionLog, ephemeralMemory,
+                businessDecisions, activeToolFailures, validationFeedback, riskFlags);
     }
 }

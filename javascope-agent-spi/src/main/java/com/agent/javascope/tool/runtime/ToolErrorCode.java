@@ -27,6 +27,8 @@ public enum ToolErrorCode {
     TOOL_CANCELLED,
     /** 工具调用超过时间预算。 */
     TOOL_TIMEOUT,
+    /** Agent 请求总截止时间已耗尽，不能再开始或继续工具尝试。 */
+    TOOL_REQUEST_DEADLINE_EXCEEDED,
     /** 工具依赖的网络连接失败。 */
     TOOL_NETWORK_ERROR,
     /** 工具的通用外部依赖暂时不可用。 */

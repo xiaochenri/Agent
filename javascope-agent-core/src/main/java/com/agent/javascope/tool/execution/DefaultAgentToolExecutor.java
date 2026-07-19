@@ -10,6 +10,7 @@ import com.agent.javascope.tool.contract.ToolSemanticValidator;
 import com.agent.javascope.tool.invocation.ToolInvoker;
 import com.agent.javascope.tool.error.DefaultToolErrorClassifier;
 import com.agent.javascope.tool.middleware.ToolExecutionContext;
+import com.agent.javascope.tool.middleware.ToolExecutionObserver;
 import com.agent.javascope.tool.middleware.ToolInvocationChain;
 import com.agent.javascope.tool.middleware.ToolMiddleware;
 import com.agent.javascope.tool.middleware.ToolResultFactory;
@@ -36,6 +37,7 @@ public class DefaultAgentToolExecutor implements AgentToolExecutor {
     private final AgentJsonCodecUtil json;
     private final ToolContractValidator contractValidator;
     private final List<ToolSemanticValidator> semanticValidators;
+    private final ToolExecutionObserver observer;
 
     public DefaultAgentToolExecutor(
             ToolRegistry registry,
@@ -44,7 +46,7 @@ public class DefaultAgentToolExecutor implements AgentToolExecutor {
             ToolInvoker invoker,
             AgentJsonCodecUtil json) {
         this(registry, authorizationPolicy, middlewares, invoker, json,
-                new JsonSchemaToolContractValidator(), List.of());
+                new JsonSchemaToolContractValidator(), List.of(), ToolExecutionObserver.NOOP);
     }
 
     public DefaultAgentToolExecutor(
@@ -55,6 +57,19 @@ public class DefaultAgentToolExecutor implements AgentToolExecutor {
             AgentJsonCodecUtil json,
             ToolContractValidator contractValidator,
             List<ToolSemanticValidator> semanticValidators) {
+        this(registry, authorizationPolicy, middlewares, invoker, json,
+                contractValidator, semanticValidators, ToolExecutionObserver.NOOP);
+    }
+
+    public DefaultAgentToolExecutor(
+            ToolRegistry registry,
+            ToolAuthorizationPolicy authorizationPolicy,
+            List<ToolMiddleware> middlewares,
+            ToolInvoker invoker,
+            AgentJsonCodecUtil json,
+            ToolContractValidator contractValidator,
+            List<ToolSemanticValidator> semanticValidators,
+            ToolExecutionObserver observer) {
         this.registry = registry;
         this.authorizationPolicy = authorizationPolicy;
         this.middlewares = middlewares == null ? List.of() : List.copyOf(middlewares);
@@ -64,19 +79,42 @@ public class DefaultAgentToolExecutor implements AgentToolExecutor {
                 ? new JsonSchemaToolContractValidator()
                 : contractValidator;
         this.semanticValidators = semanticValidators == null ? List.of() : List.copyOf(semanticValidators);
+        this.observer = observer == null ? ToolExecutionObserver.NOOP : observer;
     }
 
     @Override
     public ToolExecutionResult execute(ToolInvocation invocation) {
         String toolName = invocation == null ? "" : invocation.toolName();
+        long startedAt = System.nanoTime();
+        ToolExecutionResult result;
         try {
-            return executeInternal(invocation, toolName);
+            result = executeInternal(invocation, toolName);
         } catch (Exception error) {
             LOG.log(System.Logger.Level.WARNING,
                     "Tool execution failed, tool=" + toolName + ", exceptionType=" + error.getClass().getName(),
                     error);
-            return ToolResultFactory.failed(
+            result = ToolResultFactory.failed(
                     toolName, ToolErrorCode.TOOL_INTERNAL_ERROR, "工具运行时处理失败", false);
+        }
+        safelyObserveCall(toolName, result, startedAt);
+        return result;
+    }
+
+    private void safelyObserveCall(String toolName, ToolExecutionResult result, long startedAt) {
+        try {
+            int attemptCount = result == null || result.metadata() == null
+                    ? 1 : result.metadata().path("attempt_count").asInt(1);
+            boolean retryExhausted = result != null && result.metadata() != null
+                    && result.metadata().path("retry_exhausted").asBoolean(false);
+            AgentToolDefinition definition = registry.findDefinition(toolName);
+            observer.onCallCompleted(
+                    new ToolExecutionContext(toolName, definition),
+                    result,
+                    attemptCount,
+                    retryExhausted,
+                    Math.max(0, (System.nanoTime() - startedAt) / 1_000_000L));
+        } catch (RuntimeException error) {
+            LOG.log(System.Logger.Level.WARNING, "Tool call observer failed, tool=" + toolName, error);
         }
     }
 

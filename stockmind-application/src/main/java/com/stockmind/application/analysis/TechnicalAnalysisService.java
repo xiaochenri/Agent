@@ -8,10 +8,12 @@ import com.stockmind.domain.market.AdjustmentMode;
 import com.stockmind.domain.market.BarDataset;
 import com.stockmind.domain.market.BarInterval;
 import com.stockmind.domain.market.MarketBar;
+import com.stockmind.domain.market.MarketQuote;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -38,6 +40,7 @@ public class TechnicalAnalysisService {
         Map<String, Object> result = base(dataset);
         result.put("bars", bars);
         result.put("bar_count", bars.size());
+        result.put("series_summary", MarketSeriesSummarizer.summarize(dataset.bars()));
         return result;
     }
 
@@ -45,18 +48,38 @@ public class TechnicalAnalysisService {
      * Returns the latest close from the same bar provider used by every technical indicator.
      */
     public Map<String, Object> marketQuote(String symbol, String end, String adjustment) {
-        BarDataset dataset = loadRequested(symbol, null, end, adjustment);
-        List<MarketBar> bars = dataset.bars();
-        MarketBar current = bars.getLast();
-        MarketBar previous = bars.size() > 1 ? bars.get(bars.size() - 2) : null;
-        double changePct = previous == null ? 0
-                : (current.close().doubleValue() - previous.close().doubleValue())
-                / previous.close().doubleValue() * 100;
-        Map<String, Object> result = base(dataset);
-        result.put("price", n(current.close()));
-        result.put("change_pct", n(changePct));
-        result.put("volume", current.volume().longValue());
-        result.put("as_of", current.closeTime().toString());
+        if (symbol == null || symbol.isBlank()) throw new IllegalArgumentException("symbol 不能为空");
+        if (end != null && !end.isBlank()
+                && LocalDate.parse(end).isBefore(LocalDate.now(ZoneId.of("Asia/Shanghai")))) {
+            BarDataset dataset = loadRequested(symbol, null, end, adjustment);
+            List<MarketBar> bars = dataset.bars();
+            MarketBar current = bars.getLast();
+            MarketBar previous = bars.size() > 1 ? bars.get(bars.size() - 2) : null;
+            double dailyChangePct = previous == null ? 0
+                    : (current.close().doubleValue() - previous.close().doubleValue())
+                    / previous.close().doubleValue() * 100;
+            Map<String, Object> historical = base(dataset);
+            historical.put("price", n(current.close()));
+            historical.put("previous_close", previous == null ? null : n(previous.close()));
+            historical.put("daily_change_pct", n(dailyChangePct));
+            historical.put("volume", current.volume().longValue());
+            return historical;
+        }
+        MarketQuote quote = marketDataProvider.loadQuote(symbol.trim().toUpperCase(Locale.ROOT));
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("symbol", quote.instrumentId());
+        result.put("dataset_id", quote.datasetId());
+        result.put("source", quote.source());
+        result.put("as_of", quote.asOf().toString());
+        result.put("start_at", quote.asOf().toString());
+        result.put("end_at", quote.asOf().toString());
+        result.put("interval", "realtime");
+        result.put("adjustment", "NONE");
+        result.put("warnings", quote.warnings());
+        result.put("price", n(quote.price()));
+        result.put("previous_close", n(quote.previousClose()));
+        result.put("daily_change_pct", n(quote.dailyChangePct()));
+        result.put("volume", quote.volume().longValue());
         return result;
     }
 

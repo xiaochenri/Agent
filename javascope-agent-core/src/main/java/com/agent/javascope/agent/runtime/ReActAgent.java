@@ -15,6 +15,9 @@ import com.agent.javascope.model.AgentChatModelClient;
 import com.agent.javascope.prompt.AgentPromptProvider;
 import com.agent.javascope.runtime.AgentRuntimeProperties;
 import com.agent.javascope.tool.runtime.AgentToolExecutor;
+import com.agent.javascope.tool.runtime.RequestDeadline;
+import com.agent.javascope.tool.runtime.RetryBudget;
+import com.agent.javascope.tool.runtime.ToolRequestContext;
 import com.agent.javascope.tools.validation.StepValidatorTool;
 import com.agent.javascope.verifier.IndependentVerifierService;
 import reactor.core.publisher.Flux;
@@ -31,6 +34,7 @@ public class ReActAgent extends Agent {
     private final InputRouter inputRouter;
     private final ExecutionStrategySelector strategySelector;
     private final ExecutionLogStore executionLogStore;
+    private final AgentRuntimeProperties properties;
 
     public ReActAgent(
             AgentRuntimeProperties properties,
@@ -44,6 +48,7 @@ public class ReActAgent extends Agent {
             ContextManager contextManager,
             PromptAssembler promptAssembler) {
         super(properties, promptProvider, toolExecutor, modelClient, json);
+        this.properties = properties;
         this.executionLogStore = executionLogStore;
         this.inputRouter = new InputRouter(promptProvider, modelClient, json, new AgentToolCallExtractor(json));
         ExecutionStrategy directReply = new DirectReplyExecutionStrategy(
@@ -97,7 +102,13 @@ public class ReActAgent extends Agent {
     private RuntimeState execute(
             String input, String sessionId, String userId, Consumer<Map<String, Object>> eventConsumer, boolean useModelStream) {
         ensureAgentInitialized();
-        RuntimeState state = new RuntimeState(new ExecutionTrace(UUID.randomUUID().toString(), executionLogStore, json));
+        String executionId = UUID.randomUUID().toString();
+        RuntimeState state = new RuntimeState(
+                new ExecutionTrace(executionId, executionLogStore, json),
+                new ToolRequestContext(
+                        executionId,
+                        RequestDeadline.afterMillis(properties.getRequestTimeoutMs()),
+                        RetryBudget.limited(properties.getToolRetryBudget())));
         state.trace.record(ExecutionEventType.USER_INPUT_RECEIVED, Map.of(
                 "session_id", sessionId == null ? "" : sessionId,
                 "user_id", userId == null ? "" : userId,

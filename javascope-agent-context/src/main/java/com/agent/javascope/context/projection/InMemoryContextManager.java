@@ -71,7 +71,7 @@ public class InMemoryContextManager implements ContextManager {
 
         ArrayNode latestObservations = latestToolObservations(executionLog, budget.maxEvidenceItems());
         return new WorkingContext(
-                request.currentPlan(), history, constraints, evidence,
+                request.currentPlan(), request.investigationState(), history, constraints, evidence,
                 latestObservations, promptSafeActiveFailures(request.activeToolFailures()));
     }
 

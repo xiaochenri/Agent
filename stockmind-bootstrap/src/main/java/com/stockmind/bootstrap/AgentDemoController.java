@@ -57,7 +57,7 @@ public class AgentDemoController {
 
     @GetMapping("/api/agent/demo")
     public String demo(
-            @RequestParam(name = "input", defaultValue = "AAPL") String input,
+            @RequestParam(name = "input", defaultValue = "600519") String input,
             @RequestParam(name = "sessionId", defaultValue = "demo-session") String sessionId,
             @RequestParam(name = "userId", defaultValue = "demo-user") String userId) {
         return reActAgent.call(input, sessionId, userId);
@@ -65,7 +65,7 @@ public class AgentDemoController {
 
     @GetMapping(path = "/api/agent/demo/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter demoStream(
-            @RequestParam(name = "input", defaultValue = "AAPL") String input,
+            @RequestParam(name = "input", defaultValue = "600519") String input,
             @RequestParam(name = "sessionId", defaultValue = "demo-session") String sessionId,
             @RequestParam(name = "userId", defaultValue = "demo-user") String userId) {
         SseEmitter emitter = new SseEmitter(0L);

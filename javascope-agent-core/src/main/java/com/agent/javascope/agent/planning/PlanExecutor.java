@@ -153,7 +153,7 @@ public class PlanExecutor {
                     "input", toolInput,
                     "plan_step", step.getStepId()), Map.of());
             ToolExecutionResult toolResult = toolExecutor.execute(
-                    new ToolInvocation(toolName, json.toTree(toolInput), input));
+                    new ToolInvocation(toolName, json.toTree(toolInput), input, state.toolRequestContext));
             Map<String, Object> resultJson = ToolExecutionResultMapper.toCompatibilityMap(toolResult, json);
             state.trace.record(ExecutionEventType.TOOL_COMPLETED, Map.of(
                     "round", round,

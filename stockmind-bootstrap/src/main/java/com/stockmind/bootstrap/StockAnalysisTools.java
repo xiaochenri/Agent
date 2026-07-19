@@ -56,7 +56,7 @@ public class StockAnalysisTools extends StockToolSupport {
 
         String quoteTime = firstNonBlank(asString(quote.get("as_of")), asString(technical.get("as_of")));
         List<Map<String, Object>> evidence = new ArrayList<>();
-        addEvidence(evidence, "MARKET_QUOTE", quote, List.of("price", "change_pct", "volume", "as_of", "source"));
+        addEvidence(evidence, "MARKET_QUOTE", quote, List.of("price", "daily_change_pct", "volume", "as_of", "source"));
         addEvidence(evidence, "TECHNICAL_INDICATORS", technical,
                 List.of("moving_average", "macd", "rsi", "bollinger", "atr", "volume_indicator", "signals", "as_of", "source"));
         addEvidence(evidence, "NEWS", bundle.news(), List.of("items", "source", "data_mode"));
@@ -109,7 +109,7 @@ public class StockAnalysisTools extends StockToolSupport {
             List<String> inheritedRisks) {
         String displayName = name == null || name.isBlank() ? bundle.symbol() : name;
         Double price = number(quote.get("price"));
-        Double dailyChange = number(quote.get("change_pct"));
+        Double dailyChange = number(quote.get("daily_change_pct"));
         Double rsi = nestedNumber(technical, "rsi", "rsi");
         Double volumeRatio = nestedNumber(technical, "volume_indicator", "volume_ratio");
         Double percentB = nestedNumber(technical, "bollinger", "percent_b");

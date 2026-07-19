@@ -29,24 +29,24 @@ public class DefaultPromptAssembler implements PromptAssembler {
             WorkingContext context,
             PromptBudget budget) {
         String prompt = render(promptProvider, systemInstruction, input, executionMode, toolSchemas,
-                context.currentPlan(), context.relevantHistory(), context.activeConstraints(),
+                context.currentPlan(), context.investigationState(), context.relevantHistory(), context.activeConstraints(),
                 context.latestObservations(), context.evidenceSummaries(), context.activeToolFailures());
         if (withinBudget(prompt, budget)) return prompt;
 
         // 低优先级区域逐级清空；每次都重新渲染完整 Prompt，禁止按字符位置截断。
         prompt = render(promptProvider, systemInstruction, input, executionMode, toolSchemas,
-                context.currentPlan(), JsonNodeFactory.instance.arrayNode(), context.activeConstraints(),
+                context.currentPlan(), context.investigationState(), JsonNodeFactory.instance.arrayNode(), context.activeConstraints(),
                 context.latestObservations(), context.evidenceSummaries(), context.activeToolFailures());
         if (withinBudget(prompt, budget)) return prompt;
 
         prompt = render(promptProvider, systemInstruction, input, executionMode, toolSchemas,
-                context.currentPlan(), JsonNodeFactory.instance.arrayNode(), context.activeConstraints(),
+                context.currentPlan(), context.investigationState(), JsonNodeFactory.instance.arrayNode(), context.activeConstraints(),
                 context.latestObservations(), JsonNodeFactory.instance.arrayNode(),
                 context.activeToolFailures());
         if (withinBudget(prompt, budget)) return prompt;
 
         prompt = render(promptProvider, systemInstruction, input, executionMode, compactToolSchemas(toolSchemas),
-                JsonNodeFactory.instance.arrayNode(), JsonNodeFactory.instance.arrayNode(),
+                JsonNodeFactory.instance.arrayNode(), context.investigationState(), JsonNodeFactory.instance.arrayNode(),
                 context.activeConstraints(), context.latestObservations(),
                 JsonNodeFactory.instance.arrayNode(), context.activeToolFailures());
         if (withinBudget(prompt, budget)) return prompt;
@@ -62,12 +62,15 @@ public class DefaultPromptAssembler implements PromptAssembler {
             String executionMode,
             List<Map<String, Object>> toolSchemas,
             Object currentPlan,
+            Object investigationState,
             Object relevantHistory,
             Object activeConstraints,
             Object latestObservations,
             Object evidenceSummaries,
             Object activeToolFailures) {
         Map<String, Object> evidenceContext = new LinkedHashMap<>();
+        // 调查状态与活跃失败都是跨轮决策核心，在任何预算裁剪阶段均保留。
+        evidenceContext.put("investigation_state", investigationState);
         // 活跃失败先于普通观察呈现，并且任何裁剪阶段都不会删除。
         evidenceContext.put("active_tool_failures", activeToolFailures);
         evidenceContext.put("latest_tool_observations", latestObservations);

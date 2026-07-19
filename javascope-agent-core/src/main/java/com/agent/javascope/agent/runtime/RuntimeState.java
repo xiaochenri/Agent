@@ -10,6 +10,7 @@ import com.agent.javascope.entity.plan.PlanStepState;
 import com.agent.javascope.entity.plan.PlanToolData;
 import com.agent.javascope.entity.routing.RouteDecision;
 import com.agent.javascope.tools.validation.StepValidatorTool;
+import com.agent.javascope.tool.runtime.ToolRequestContext;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -19,9 +20,16 @@ import java.util.Set;
 
 public final class RuntimeState {
     public final ExecutionTrace trace;
+    public final ToolRequestContext toolRequestContext;
 
     public RuntimeState(ExecutionTrace trace) {
+        this(trace, ToolRequestContext.unbounded());
+    }
+
+    public RuntimeState(ExecutionTrace trace, ToolRequestContext toolRequestContext) {
         this.trace = trace;
+        this.toolRequestContext = toolRequestContext == null
+                ? ToolRequestContext.unbounded() : toolRequestContext;
     }
 
     // 全链路执行日志：记录每轮推理、工具调用与校验结果，最终原样返回给上层。
@@ -34,6 +42,9 @@ public final class RuntimeState {
     public final List<String> ephemeralMemory = new ArrayList<>();
     // 业务工具上报的通用决策状态：作为下一轮推理的高优先级上下文，不负责强制终止推理。
     public final List<Map<String, Object>> businessDecisions = new ArrayList<>();
+    // ReAct 跨轮调查状态：保存问题框架、候选假设、已确认事实和未决问题。
+    // 与 ephemeralMemory 不同，它不会在 reasoning 后清空，而由 reasoning_update 增量合并。
+    public final Map<String, Object> investigationState = new LinkedHashMap<>();
     // direct/react 已执行动作指纹（tool+input）；用于保证逐轮观察并阻止模型重复相同动作。
     public final Set<String> observedActionFingerprints = new java.util.LinkedHashSet<>();
     // 当前任务仍未解除的最终工具失败；按 tool+input 指纹索引并进入 active_tool_failures。

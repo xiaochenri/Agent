@@ -7,6 +7,7 @@ import com.agent.javascope.agent.planning.ToolDispatchStatus;
 import com.agent.javascope.agent.prompt.PromptAssembler;
 import com.agent.javascope.agent.routing.AgentToolCallExtractor;
 import com.agent.javascope.agent.runtime.Agent;
+import com.agent.javascope.agent.runtime.InvestigationStateTracker;
 import com.agent.javascope.agent.runtime.RuntimeState;
 import com.agent.javascope.agent.runtime.ToolFailureRecord;
 import com.agent.javascope.agent.runtime.ToolFailureTracker;
@@ -17,6 +18,7 @@ import com.agent.javascope.context.projection.WorkingContext;
 import com.agent.javascope.context.trace.ExecutionEventType;
 import com.agent.javascope.context.trace.ExecutionLogStore;
 import com.agent.javascope.entity.execution.AgentToolCall;
+import com.agent.javascope.entity.execution.AgentExecutionLogEntry;
 import com.agent.javascope.json.AgentJsonCodecUtil;
 import com.agent.javascope.model.AgentChatModelClient;
 import com.agent.javascope.prompt.AgentPromptProvider;
@@ -41,6 +43,7 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
     private final ToolCallDispatcher toolCallDispatcher;
     private final FinalAnswerSynthesizer finalAnswerSynthesizer;
     private final AgentToolCallExtractor toolCallExtractor;
+    private final InvestigationStateTracker investigationStateTracker;
     private final ContextManager contextManager;
     private final PromptAssembler promptAssembler;
 
@@ -58,6 +61,7 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
             PromptAssembler promptAssembler) {
         super(properties, promptProvider, toolExecutor, modelClient, json);
         this.toolCallExtractor = new AgentToolCallExtractor(json);
+        this.investigationStateTracker = new InvestigationStateTracker(json);
         this.finalAnswerSynthesizer =
                 new FinalAnswerSynthesizer(properties, json, independentVerifierService, toolCallExtractor);
         this.toolCallDispatcher = planningEnabled
@@ -83,6 +87,18 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
         for (int round = 1; round <= MAX_TOOL_LOOP_ROUNDS; round++) {
             emitStreamEvent(eventConsumer, "process", "第 " + round + " 轮：模型分析下一步动作");
             state.lastResponse = reasoning(input, round, state, eventConsumer, useModelStream);
+            if ("react".equals(state.routeDecision.getExecutionMode()) && !state.inClarificationStage) {
+                InvestigationStateTracker.UpdateResult updateResult =
+                        investigationStateTracker.apply(state, state.lastResponse, round);
+                if (!updateResult.valid()) {
+                    state.riskFlags.add("react_reasoning_update_invalid");
+                    state.validationFeedback = String.join("；", updateResult.errors());
+                    emitReasoningValidation(eventConsumer, round, updateResult.errors());
+                    continue;
+                }
+                rememberInvestigationWarnings(state, updateResult);
+                emitReasoningUpdate(eventConsumer, round, state.lastResponse, state, updateResult.warnings());
+            }
             List<AgentToolCall> toolCalls = toolCallExtractor.extract(state.lastResponse);
             if (state.inClarificationStage) {
                 if (!toolCalls.isEmpty()) {
@@ -105,7 +121,9 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
                     continue;
                 }
                 emitToolCalls(eventConsumer, toolCalls);
+                int executionLogStart = state.executionLog.size();
                 ToolDispatchStatus dispatchStatus = toolCallDispatcher.execute(input, round, toolCalls, state);
+                emitToolObservations(eventConsumer, round, state, executionLogStart);
                 if (state.inClarificationStage) {
                     emitClarificationEvent(eventConsumer, state);
                 }
@@ -143,8 +161,28 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
             return state;
         }
 
-        finalAnswerSynthesizer.handleRoundsExhausted(input, state, round -> reasoning(input, round, state));
+        finalAnswerSynthesizer.handleRoundsExhausted(input, state, round -> {
+            Map<String, Object> response = reasoning(input, round, state);
+            if (!"react".equals(state.routeDecision.getExecutionMode())) return response;
+            InvestigationStateTracker.UpdateResult updateResult =
+                    investigationStateTracker.apply(state, response, round);
+            if (updateResult.valid()) {
+                rememberInvestigationWarnings(state, updateResult);
+                return response;
+            }
+            state.riskFlags.add("react_final_synthesis_reasoning_update_invalid");
+            state.validationFeedback = String.join("；", updateResult.errors());
+            Map<String, Object> rejected = new LinkedHashMap<>(response);
+            rejected.put("final_answer", Map.of());
+            return rejected;
+        });
         return state;
+    }
+
+    private void rememberInvestigationWarnings(
+            RuntimeState state, InvestigationStateTracker.UpdateResult updateResult) {
+        if (updateResult.warnings().isEmpty()) return;
+        state.ephemeralMemory.add("调查状态已做字段级安全纠正：" + String.join("；", updateResult.warnings()));
     }
 
     /**
@@ -302,6 +340,7 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
         }
         WorkingContext context = contextManager.project(new ContextRequest(
                 json.toTree(state.latestPlan),
+                json.toTree(state.investigationState),
                 json.toTree(state.executionLog),
                 json.toTree(state.ephemeralMemory),
                 json.toTree(state.businessDecisions),
@@ -332,6 +371,7 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
                 state.activeToolFailures.values().stream()
                         .map(ToolFailureRecord::toPublicMap)
                         .toList(),
+                state.investigationState,
                 response));
         state.lastValidationFeedback = state.validationFeedback;
         state.validationFeedback = "";
@@ -366,6 +406,115 @@ abstract class AbstractToolLoopExecutionStrategy extends Agent implements Execut
             if (!toolName.isBlank()) {
                 emitStreamEvent(eventConsumer, "process", "准备调用工具：" + toolName);
             }
+        }
+    }
+
+    /** 推送经过运行时校验的结构化调查摘要，不发送 Prompt 或模型私有推理文本。 */
+    private void emitReasoningUpdate(
+            Consumer<Map<String, Object>> eventConsumer,
+            int round,
+            Map<String, Object> response,
+            RuntimeState state,
+            List<String> warnings) {
+        if (eventConsumer == null) return;
+        Map<String, Object> update = json.asMap(response.get("reasoning_update"));
+        if (update.isEmpty()) return;
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "reasoning_update");
+        payload.put("category", "reasoning");
+        payload.put("round", round);
+        payload.put("message", "第 " + round + " 轮调查状态已更新");
+        payload.put("reasoningUpdate", update);
+        payload.put("investigationState", new LinkedHashMap<>(state.investigationState));
+        payload.put("selectedAction", json.asMap(response.get("selected_action")));
+        payload.put("warnings", warnings == null ? List.of() : List.copyOf(warnings));
+        eventConsumer.accept(payload);
+    }
+
+    private void emitReasoningValidation(
+            Consumer<Map<String, Object>> eventConsumer, int round, List<String> errors) {
+        if (eventConsumer == null) return;
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("type", "reasoning_update");
+        payload.put("category", "reasoning_validation");
+        payload.put("round", round);
+        payload.put("status", "rejected");
+        payload.put("message", "第 " + round + " 轮结构化调查更新未通过校验，等待下一轮修正");
+        payload.put("errors", errors == null ? List.of() : List.copyOf(errors));
+        eventConsumer.accept(payload);
+    }
+
+    /** 将本轮新增的安全工具结果投影到流式页面，原始 data 和内部异常不进入事件。 */
+    private void emitToolObservations(
+            Consumer<Map<String, Object>> eventConsumer,
+            int round,
+            RuntimeState state,
+            int executionLogStart) {
+        if (eventConsumer == null) return;
+        int start = Math.max(0, Math.min(executionLogStart, state.executionLog.size()));
+        for (int i = start; i < state.executionLog.size(); i++) {
+            AgentExecutionLogEntry log = state.executionLog.get(i);
+            Map<String, Object> output = json.asMap(log.getOutput());
+            String status = json.normalize(String.valueOf(output.get("status")), "");
+            if (!"success".equals(status) && !"failed".equals(status)) continue;
+            String toolName = json.normalize(log.getToolName(), "");
+            if (toolName.isBlank() || "reasoning".equals(toolName)
+                    || "independent_verifier".equals(toolName)) continue;
+            Map<String, Object> error = json.asMap(output.get("error"));
+            Map<String, Object> metadata = json.asMap(output.get("metadata"));
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("type", "tool_observation");
+            payload.put("category", "tool");
+            payload.put("round", round);
+            payload.put("step", log.getStep());
+            payload.put("toolName", toolName);
+            payload.put("status", status);
+            Map<String, Object> attempt = new LinkedHashMap<>();
+            attempt.put("attemptCount", intValue(metadata.get("attempt_count"), 1));
+            attempt.put("maxAttempts", intValue(metadata.get("max_attempts"), 1));
+            attempt.put("retryExhausted", Boolean.TRUE.equals(metadata.get("retry_exhausted")));
+            attempt.put("retrySkipped", Boolean.TRUE.equals(metadata.get("retry_skipped")));
+            attempt.put("stopReason", metadata.getOrDefault("retry_stop_reason", ""));
+            attempt.put("totalBackoffMs", longValue(metadata.get("total_backoff_ms"), 0L));
+            attempt.put("totalDurationMs", longValue(metadata.get("total_duration_ms"), 0L));
+            attempt.put("retryBudgetRemaining", intValue(metadata.get("retry_budget_remaining"), -1));
+            attempt.put("requestRemainingMs", longValue(metadata.get("request_remaining_ms"), -1L));
+            attempt.put("attempts", metadata.getOrDefault("attempts", List.of()));
+            payload.put("attempt", attempt);
+            payload.put("error", error);
+            payload.put("validationErrors", json.asStringList(output.get("validation_errors")));
+            payload.put("message", toolObservationMessage(toolName, status, error, output));
+            eventConsumer.accept(payload);
+        }
+    }
+
+    private String toolObservationMessage(
+            String toolName, String status, Map<String, Object> error, Map<String, Object> output) {
+        if ("success".equals(status)) return "工具 " + toolName + " 执行成功";
+        Object messageValue = error.get("public_message");
+        String publicMessage = json.normalize(messageValue == null ? "" : String.valueOf(messageValue), "");
+        if (publicMessage.isBlank()) {
+            List<String> errors = json.asStringList(output.get("validation_errors"));
+            publicMessage = errors.isEmpty() ? "执行失败" : errors.get(0);
+        }
+        return "工具 " + toolName + " 执行失败：" + publicMessage;
+    }
+
+    private int intValue(Object value, int fallback) {
+        if (value instanceof Number number) return number.intValue();
+        try {
+            return Integer.parseInt(String.valueOf(value));
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
+    }
+
+    private long longValue(Object value, long fallback) {
+        if (value instanceof Number number) return number.longValue();
+        try {
+            return Long.parseLong(String.valueOf(value));
+        } catch (RuntimeException ignored) {
+            return fallback;
         }
     }
 
