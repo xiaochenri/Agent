@@ -68,24 +68,35 @@ public class JdbcConversationRepository {
     }
 
     public List<Conversation> listOwned(String userId, String businessCode, int limit) {
+        return listOwned(userId, businessCode, null, null, limit);
+    }
+
+    /** Keyset pagination keeps the conversation sidebar responsive as history grows. */
+    public List<Conversation> listOwned(
+            String userId, String businessCode, LocalDateTime beforeUpdatedAt, String beforeId, int limit) {
+        Timestamp before = beforeUpdatedAt == null ? null : Timestamp.valueOf(beforeUpdatedAt);
         if (businessCode == null || businessCode.isBlank()) {
             return jdbcTemplate.query("""
                     SELECT id, user_id, business_code, title, status, summary,
                            last_message_at, created_at, updated_at
                     FROM conversation
                     WHERE user_id = ? AND status <> 'deleted'
-                    ORDER BY COALESCE(last_message_at, created_at) DESC
+                      AND NOT (title IS NULL AND last_message_at IS NULL)
+                      AND (? IS NULL OR updated_at < ? OR (updated_at = ? AND id < ?))
+                    ORDER BY updated_at DESC, id DESC
                     LIMIT ?
-                    """, MAPPER, userId, limit);
+                    """, MAPPER, userId, before, before, before, beforeId, limit);
         }
         return jdbcTemplate.query("""
                 SELECT id, user_id, business_code, title, status, summary,
                        last_message_at, created_at, updated_at
                 FROM conversation
                 WHERE user_id = ? AND business_code = ? AND status <> 'deleted'
-                ORDER BY COALESCE(last_message_at, created_at) DESC
+                  AND NOT (title IS NULL AND last_message_at IS NULL)
+                  AND (? IS NULL OR updated_at < ? OR (updated_at = ? AND id < ?))
+                ORDER BY updated_at DESC, id DESC
                 LIMIT ?
-                """, MAPPER, userId, businessCode, limit);
+                """, MAPPER, userId, businessCode, before, before, before, beforeId, limit);
     }
 
     public void touch(String id, String title) {

@@ -1,13 +1,13 @@
 # stockmind-agent
 
-股票分析 Agent 示例工程。当前项目由 Spring Boot 启动层、可复用 Agent 运行时、股票业务工具、会话记忆和知识库向量检索组成。
+股票分析 Agent 示例工程。当前项目由 Spring Boot 启动层、可复用 Agent 运行时、股票业务工具、会话记忆和公开股票数据接口组成。
 
 ## 版本基线
 
 - Java: `21`
 - Spring Boot: `3.3.0`
 - Reactor BOM: `2025.0.2`
-- MySQL/OceanBase: 用于业务数据源与向量知识库
+- MySQL: 用于用户、会话等运行时持久化；股票工具不依赖数据库取数
 - Redis: 配置保留，当前会话上下文主要由应用内存维护
 
 ## 模块划分
@@ -33,15 +33,12 @@
   - `ConversationApplicationService`：会话归属校验、上下文加载、请求幂等和消息落库
   - `CurrentUserProvider`：登录态适配边界；当前由开发环境固定用户实现
   - MySQL 表：`app_user`、`conversation`、`conversation_message`、`agent_user_memory`
-- `stockmind-common`: 公共基础能力
-  - 文档文本抽取
-  - 向量构建
-  - OceanBase 向量表创建与检索
+- `stockmind-common`: 旧版文档处理公共代码；当前股票工具链不引用其中的向量存储能力
 - `stockmind-bootstrap`: Spring Boot 启动、HTTP 接口、股票业务注入
   - `StockMindApplication`: 应用启动类
   - `AgentDemoController`: demo、流式对话、会话对话、记忆管理接口
   - `StockAgentBusinessConfiguration`: 股票场景 prompt 定制与澄清策略
-  - 股票业务工具按类型拆分：`MarketDataTools`（行情/K线）、`TechnicalIndicatorTools`（技术指标）、`ResearchEvidenceTools`（新闻/知识库/结构化财报）、`FinancialMetricTools`（EPS/PE 确定性计算）、`StockAnalysisTools`（综合总结）
+  - 股票业务工具按类型拆分：`MarketDataTools`（行情/K线）、`TechnicalIndicatorTools`（技术指标）、`ResearchEvidenceTools`（新闻/公告/结构化财报）、`FinancialMetricTools`（EPS/PE 确定性计算）、`StockAnalysisTools`（真实数据综合快照）
   - `UserMemoryService`: 用户记忆的读写、TTL 和 prompt 拼接
 - `stockmind-domain`、`stockmind-application`、`stockmind-infrastructure`: 标准分层模块，目前主要作为后续业务扩展边界保留
 
@@ -167,9 +164,21 @@ Agent 执行
 在 Spring Bean 方法上使用 `@AgentTool` 即可注册为模型可调用工具。当前股票工具：
 
 - `market_quote`: 通过腾讯财经公开 HTTP 接口返回 A 股、指数和 ETF 的实时行情；指定历史 `end_date` 时使用腾讯复权日 K
-- `stock_snapshot_analysis`: 仅在用户明确要求分析/总结/解读时，基于已知行情、新闻或知识库信息生成简要总结、风险提示、数据局限和下一步建议
+- `historical_bars`: 通过腾讯财经返回标准化日线 OHLCV
+- `price_move_analysis`: 基于真实日 K 确定性计算区间收益、最大回撤、反弹、关键涨跌日和量能对比
+- `benchmark_performance`: 将个股区间收益与基准指数（默认沪深300）对比并计算相对收益
+- `sector_performance`: 通过东方财富返回个股所属行业板块及当前交易日表现
+- `company_announcements`: 通过巨潮资讯官方接口查询指定时间窗内的公司公告及原文/PDF链接
+- `stock_snapshot_analysis`: 直连腾讯行情/K线、东财新闻与行业、巨潮公告和新浪财报，生成综合快照、风险提示和数据局限
 - `news_search`: 通过东财公开搜索接口按关键词检索真实新闻，并按请求时间窗过滤
-- `knowledge_search`: 从 OceanBase 向量知识库检索财报/年报/季报证据片段
+- `financial_report_metrics`: 通过新浪结构化财报接口读取指定报告期 EPS、净利润和股本并执行确定性计算
+- `latest_financial_report`: 通过新浪结构化财报接口自动选择截至指定日期的最新报告期，返回三大报表核心字段
+- `financial_trend_analysis`: 基于新浪最近多期三表计算营收、利润、现金流、净利率和资产负债率趋势
+- `analyst_consensus_forecast`: 聚合东财个股研报的年度EPS预测，按机构去重并计算中位数前向PE
+- `research_report_search`: 返回真实机构研报、评级、未来三年EPS预测和PDF原文
+- `peer_valuation_comparison`: 获取行业板块内按总市值降序的前10只A股成分股，以腾讯TTM PE/PB计算同行中位数
+- `dividend_analysis`: 读取东财已实施分红，将每10股派息标准化为每股并计算过去12个月滚动股息率
+- `knowledge_search`: 聚合东财新闻、巨潮公告和新浪结构化财报公开接口，不访问 OceanBase 向量库
 
 ### 澄清策略
 
@@ -198,10 +207,17 @@ Agent 执行
 建议通过环境变量覆盖敏感配置，不要把真实密钥、数据库密码提交到仓库：
 
 ```bash
-export AGENT_RUNTIME_PROVIDER=openai
-export AGENT_RUNTIME_MODEL=deepseek-chat
-export AGENT_RUNTIME_API_KEY=你的模型 API Key
-export AGENT_RUNTIME_BASE_URL=https://api.deepseek.com/v1
+# DeepSeek（默认）
+export AGENT_RUNTIME_PROVIDER=deepseek
+export DEEPSEEK_MODEL=deepseek-chat
+export DEEPSEEK_API_KEY=你的 DeepSeek API Key
+
+# 或切换到月之暗面 Kimi K3；无需改动 Java 代码
+export AGENT_RUNTIME_PROVIDER=kimi
+export MOONSHOT_API_KEY=你的 Moonshot API Key
+# 可选，默认值已经是 kimi-k3
+export KIMI_MODEL=kimi-k3
+
 export AGENT_RUNTIME_FINAL_ANSWER_VALIDATION_ENABLED=false
 export STOCKMIND_DATASOURCE_URL='jdbc:mysql://localhost:3306/stockmind?useSSL=false&serverTimezone=UTC&characterEncoding=UTF-8'
 export STOCKMIND_DATASOURCE_USERNAME=你的数据库用户名
@@ -236,10 +252,10 @@ Prometheus 抓取地址为 `/actuator/prometheus`。流式接口另外发送 `re
 
 常用运行时配置项：
 
-- `java.agent-runtime.provider`: `openai` 或兼容提供方标识
-- `java.agent-runtime.model`: 模型名称
-- `java.agent-runtime.api-key`: 模型 API Key
-- `java.agent-runtime.base-url`: OpenAI 兼容 Chat Completions 地址
+- `java.agent-runtime.provider`: 当前启用的提供方，支持 `deepseek`、`kimi`（`moonshot` 是 `kimi` 的别名）
+- `java.agent-runtime.deepseek.*`: DeepSeek 的 `model`、`api-key`、`base-url` 与 `temperature-enabled`
+- `java.agent-runtime.kimi.*`: Kimi 的 `model`、`api-key`、`base-url` 与 `temperature-enabled`；默认模型为 `kimi-k3`
+- 旧版 `java.agent-runtime.model/api-key/base-url` 仍兼容，非空时作为全局覆盖项优先使用
 - `java.agent-runtime.system-instruction`: 基础系统提示词
 - direct、planned 和 react 的 Action/Observation 循环固定最多执行 10 轮，不提供额外轮次配置
 - 最终合成始终额外保留 1 次模型调用，且禁止继续调用工具
@@ -248,19 +264,21 @@ Prometheus 抓取地址为 `/actuator/prometheus`。流式接口另外发送 `re
 - `java.agent-runtime.tool-retry-budget`: 一次 Agent 请求中所有工具共享的额外重试令牌数，默认 `6`
 - `java.agent-runtime.tool-retry-base-delay-ms`: 指数退避基础时间，默认 `100ms`
 - `java.agent-runtime.tool-retry-max-delay-ms`: `retryAfter` 或指数退避的等待上限，默认 `3000ms`
-- `java.agent-runtime.request-timeout-ms`: 从 Agent 请求开始计算、跨模型阶段和全部工具共享的截止时间，默认 `180000ms`
-- `java.agent-runtime.final-answer-validation-enabled`: 是否开启最终答案独立校验
+- `java.agent-runtime.request-timeout-ms`: 从 Agent 请求开始计算、跨模型阶段和全部工具共享的截止时间，默认 `3600000ms`（1小时），可通过 `AGENT_RUNTIME_REQUEST_TIMEOUT_MS` 覆盖
+- `java.agent-runtime.final-answer-validation-enabled`: 是否开启最终答案独立校验，默认 `true`；股票任务还会先执行确定性语义与结论论据映射校验
 - `java.agent-runtime.temperature`: 模型温度
 - `java.agent-runtime.timeout-seconds`: 模型请求超时
-- `java.agent-runtime.context-max-prompt-characters`: 单轮 Action Prompt 的字符预算，默认 `24000`
+- `java.agent-runtime.model-max-retries`: 429、5xx 和网络异常的额外模型重试次数，默认 `2`
+- `java.agent-runtime.model-retry-base-delay-ms`: 模型重试指数退避基础时间，默认 `1000ms`
+- `java.agent-runtime.model-retry-max-delay-ms`: 模型重试等待上限，默认 `10000ms`
+- `java.agent-runtime.context-max-prompt-characters`: 单轮 Action Prompt 的字符预算，默认 `120000`
 - `java.agent-runtime.context-max-history-items`: 单轮选择的最近执行日志数量，默认 `6`
 - `java.agent-runtime.context-max-evidence-items`: 单轮选择的证据摘要数量，默认 `8`
 
-知识库向量配置：
+股票资料查询通过腾讯、东方财富、巨潮资讯和新浪公开 HTTP 接口完成，不需要配置向量表。
 
-- `stockmind.knowledge.vector.table`: 向量表名
-- `stockmind.knowledge.vector.dimensions`: 向量维度
-- `stockmind.knowledge.vector.default-top-k`: 默认检索条数
+股票业务工具的职责边界、Prompt 分层和硬/软规则原则见
+[股票业务工具与规则分层](docs/stock-business-tool-and-rule-guide.md)。
 
 ## 运行
 

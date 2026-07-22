@@ -20,6 +20,7 @@ public final class InvestigationStateTrackerAcceptanceTest {
         verifyInitialHypothesesAndCrossRoundMerge();
         verifyInvalidEvidenceReferenceIsDroppedWithoutBlockingAction();
         verifyInitialEmptyContradictionIsAllowed();
+        verifyLaterEmptyContradictionDoesNotBlockAction();
         verifyHighestActionableGapCanSkipBlockedGap();
         verifyDeclaredToolMustMatchAndFailedCallIsBlocked();
     }
@@ -77,6 +78,15 @@ public final class InvestigationStateTrackerAcceptanceTest {
         child(response, "reasoning_update").put("contradiction_check", List.of());
         InvestigationStateTracker.UpdateResult result = tracker.apply(state, response, 1);
         require(result.valid(), "首轮尚无证据时空 contradiction_check 不应拒绝整轮: " + result.errors());
+    }
+
+    private void verifyLaterEmptyContradictionDoesNotBlockAction() {
+        RuntimeState state = new RuntimeState(null);
+        require(tracker.apply(state, firstRoundResponse(), 1).valid(), "测试前置状态初始化失败");
+        Map<String, Object> response = mutable(secondRoundResponse());
+        child(response, "reasoning_update").put("contradiction_check", List.of());
+        InvestigationStateTracker.UpdateResult result = tracker.apply(state, response, 2);
+        require(result.valid(), "建议性反证字段缺失不应阻止合法工具动作: " + result.errors());
     }
 
     private void verifyHighestActionableGapCanSkipBlockedGap() {

@@ -95,6 +95,16 @@ public class JdbcConversationMessageRepository {
                 """, MAPPER, conversationId, requestId).stream().findFirst();
     }
 
+    public Optional<ConversationMessage> findUserByRequestId(String conversationId, String requestId) {
+        if (requestId == null || requestId.isBlank()) return Optional.empty();
+        return jdbcTemplate.query("""
+                SELECT id, message_id, conversation_id, user_id, request_id, message_role, content,
+                       status, execution_id, metadata, created_at
+                FROM conversation_message
+                WHERE conversation_id = ? AND request_id = ? AND message_role = 'user'
+                """, MAPPER, conversationId, requestId).stream().findFirst();
+    }
+
     public List<ConversationMessage> recent(String conversationId, int limit) {
         List<ConversationMessage> result = new ArrayList<>(jdbcTemplate.query("""
                 SELECT id, message_id, conversation_id, user_id, request_id, message_role, content,

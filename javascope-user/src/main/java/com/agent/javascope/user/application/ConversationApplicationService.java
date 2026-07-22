@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.time.LocalDateTime;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Consumer;
@@ -66,9 +67,14 @@ public class ConversationApplicationService {
     }
 
     public List<Conversation> list(String userId, String businessCode, int limit) {
+        return list(userId, businessCode, null, null, limit);
+    }
+
+    public List<Conversation> list(
+            String userId, String businessCode, LocalDateTime beforeUpdatedAt, String beforeId, int limit) {
         String normalizedBusiness = businessCode == null || businessCode.isBlank()
                 ? null : normalizeBusiness(businessCode);
-        return conversationRepository.listOwned(userId, normalizedBusiness, clamp(limit, 1, 100));
+        return conversationRepository.listOwned(userId, normalizedBusiness, beforeUpdatedAt, beforeId, clamp(limit, 1, 100));
     }
 
     public Conversation get(String userId, String conversationId) {
@@ -129,8 +135,10 @@ public class ConversationApplicationService {
             }
 
             List<ConversationMessage> history = messageRepository.recent(conversationId, CONTEXT_MESSAGE_LIMIT);
-            messageRepository.insert(UUID.randomUUID().toString(), conversationId, userId, null,
-                    "user", input.trim(), "completed", null, "{}");
+            if (messageRepository.findUserByRequestId(conversationId, normalizedRequestId).isEmpty()) {
+                messageRepository.insert(UUID.randomUUID().toString(), conversationId, userId, normalizedRequestId,
+                        "user", input.trim(), "completed", null, "{}");
+            }
 
             AgentChatResult result;
             try {
@@ -194,6 +202,20 @@ public class ConversationApplicationService {
                 compact.put(key, payload.get(key));
             }
         }
+        java.util.LinkedHashMap<String, Object> insights = new java.util.LinkedHashMap<>();
+        Object runtime = payload.get("runtime");
+        if (runtime instanceof Map<?, ?> runtimeMap && runtimeMap.get("execution_log") instanceof List<?> logs) {
+            for (Object value : logs) {
+                if (!(value instanceof Map<?, ?> log)) continue;
+                String tool = String.valueOf(log.get("tool_name"));
+                if (!("stock_factor_profile".equals(tool) || "scenario_valuation_analysis".equals(tool))) continue;
+                if (!(log.get("output") instanceof Map<?, ?> output)
+                        || !"success".equals(String.valueOf(output.get("status")))
+                        || !(output.get("data") instanceof Map<?, ?> data)) continue;
+                insights.put(tool, data);
+            }
+        }
+        if (!insights.isEmpty()) compact.put("insights", insights);
         return compact;
     }
 

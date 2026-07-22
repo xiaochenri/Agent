@@ -16,7 +16,7 @@ public final class TencentMarketDataProviderAcceptanceTest {
     public static void main(String[] args) throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/quote", exchange -> {
-            String[] fields = new String[33];
+            String[] fields = new String[53];
             java.util.Arrays.fill(fields, "");
             fields[0] = "1";
             fields[1] = "贵州茅台";
@@ -28,6 +28,17 @@ public final class TencentMarketDataProviderAcceptanceTest {
             fields[30] = "20260717161459";
             fields[31] = "-5.99";
             fields[32] = "-0.48";
+            fields[33] = "1269.33";
+            fields[34] = "1238.98";
+            fields[37] = "732273";
+            fields[38] = "0.47";
+            fields[39] = "18.94";
+            fields[44] = "15663.52";
+            fields[45] = "15663.52";
+            fields[46] = "6.73";
+            fields[47] = "1384.89";
+            fields[48] = "1133.09";
+            fields[49] = "1.14";
             String body = "v_sh600519=\"" + String.join("~", fields) + "\";";
             byte[] bytes = body.getBytes(Charset.forName("GBK"));
             exchange.sendResponseHeaders(200, bytes.length);
@@ -35,9 +46,14 @@ public final class TencentMarketDataProviderAcceptanceTest {
             exchange.close();
         });
         server.createContext("/kline", exchange -> {
-            String body = "{\"code\":0,\"data\":{\"sh600519\":{\"qfqday\":["
+            String body = ""
+                    + "{\"code\":0,\"data\":{"
+                    + "\"sh600519\":{\"qfqday\":["
                     + "[\"2026-07-16\",\"1252.00\",\"1258.99\",\"1267.97\",\"1245.05\",\"47611.00\"],"
-                    + "[\"2026-07-17\",\"1269.01\",\"1253.00\",\"1269.33\",\"1238.98\",\"58417.00\"]]}}}";
+                    + "[\"2026-07-17\",\"1269.01\",\"1253.00\",\"1269.33\",\"1238.98\",\"58417.00\"]]},"
+                    + "\"sh000300\":{\"day\":["
+                    + "[\"2026-07-16\",\"5000.00\",\"5010.00\",\"5020.00\",\"4990.00\",\"100000.00\"],"
+                    + "[\"2026-07-17\",\"5010.00\",\"5030.00\",\"5040.00\",\"5000.00\",\"120000.00\"]]}}}";
             byte[] bytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, bytes.length);
             exchange.getResponseBody().write(bytes);
@@ -51,10 +67,16 @@ public final class TencentMarketDataProviderAcceptanceTest {
             MarketQuote quote = provider.loadQuote("600519");
             require(quote.price().doubleValue() == 1253.0, "实时价格解析错误");
             require(quote.dailyChangePct().doubleValue() == -0.48, "单日涨跌幅解析错误");
+            require(quote.peTtm().doubleValue() == 18.94, "PE解析错误");
+            require(quote.pb().doubleValue() == 6.73, "PB解析错误");
             var bars = provider.loadBars(new HistoricalBarsQuery("600519", BarInterval.DAY_1,
                     LocalDate.of(2026, 7, 16), LocalDate.of(2026, 7, 17), AdjustmentMode.FORWARD));
             require(bars.bars().size() == 2, "K线数量解析错误");
             require(bars.bars().getLast().close().doubleValue() == 1253.0, "K线收盘价解析错误");
+            var indexBars = provider.loadBars(new HistoricalBarsQuery("SH000300", BarInterval.DAY_1,
+                    LocalDate.of(2026, 7, 16), LocalDate.of(2026, 7, 17), AdjustmentMode.FORWARD));
+            require(indexBars.bars().size() == 2, "指数复权请求应回退到原始日线");
+            require(indexBars.bars().getLast().close().doubleValue() == 5030.0, "指数日线回退解析错误");
         } finally {
             server.stop(0);
         }

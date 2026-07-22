@@ -38,13 +38,12 @@ public final class InvestigationStateTracker {
         List<String> errors = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
         Map<String, Object> candidate = deepCopy(state.investigationState);
-        boolean initialRound = state.investigationState.isEmpty();
         mergeQuestionFrame(candidate, update, state, errors);
         Set<String> usableSteps = usableEvidenceSteps(state);
         mergeObservations(candidate, update, usableSteps, warnings);
         mergeHypotheses(candidate, update, usableSteps,
                 validObservationSources(update, usableSteps), errors, warnings);
-        mergeDecisionState(candidate, update, response, state, initialRound, errors);
+        mergeDecisionState(candidate, update, response, state, errors);
 
         if (!errors.isEmpty()) {
             return new UpdateResult(false, List.copyOf(errors), List.copyOf(warnings));
@@ -210,12 +209,10 @@ public final class InvestigationStateTracker {
             Map<String, Object> update,
             Map<String, Object> response,
             RuntimeState state,
-            boolean initialRound,
             List<String> errors) {
         List<String> contradictionCheck = json.asStringList(update.get("contradiction_check"));
-        if (!initialRound && contradictionCheck.stream().allMatch(String::isBlank)) {
-            errors.add("reasoning_update.contradiction_check 必须包含反证或尚未排除的替代解释");
-        }
+        // Contradiction analysis improves reasoning quality, but omitting this advisory field must
+        // not discard an otherwise valid and useful tool action.
 
         List<Map<String, Object>> gaps = maps(update.get("ranked_information_gaps"));
         for (Map<String, Object> gap : gaps) {

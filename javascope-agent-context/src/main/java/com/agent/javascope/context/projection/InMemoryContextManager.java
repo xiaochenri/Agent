@@ -18,6 +18,14 @@ import java.util.Set;
 /** 默认窗口化投影：完整日志保存在轨迹中，仅选择最近片段进入 Prompt。 */
 public class InMemoryContextManager implements ContextManager {
 
+    /** Business decision fields survive projection regardless of their position in tool JSON. */
+    private static final List<String> DECISION_FIELDS = List.of(
+            "symbol", "name", "as_of", "effective_trade_date", "overall_score", "coverage_pct",
+            "assessment_readiness", "maximum_conclusion_strength", "directional_conclusion_allowed",
+            "claim_permissions", "evidence_gaps", "required_gaps", "answer_stance",
+            "suggested_opening", "follow_up_policy", "key_metrics", "analysis_readiness", "decision",
+            "answer_context");
+
     /**
      * {@inheritDoc}
      *
@@ -244,14 +252,21 @@ public class InMemoryContextManager implements ContextManager {
             return result;
         }
         ObjectNode result = JsonNodeFactory.instance.objectNode();
-        int count = 0;
-        var fields = value.fields();
-        while (fields.hasNext() && count < 12) {
-            var field = fields.next();
-            result.set(field.getKey(), compact(field.getValue(), depth + 1));
-            count++;
+        Set<String> selected = new LinkedHashSet<>();
+        for (String field : DECISION_FIELDS) {
+            if (value.has(field) && selected.size() < 20) {
+                result.set(field, compact(value.get(field), depth + 1));
+                selected.add(field);
+            }
         }
-        if (fields.hasNext()) result.put("_truncated", true);
+        var fields = value.fields();
+        while (fields.hasNext() && selected.size() < 20) {
+            var field = fields.next();
+            if (selected.add(field.getKey())) {
+                result.set(field.getKey(), compact(field.getValue(), depth + 1));
+            }
+        }
+        if (value.size() > selected.size()) result.put("_truncated", true);
         return result;
     }
 

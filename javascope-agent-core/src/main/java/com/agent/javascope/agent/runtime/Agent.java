@@ -245,6 +245,7 @@ public abstract class Agent {
 
         List<String> conclusions = userTextList(finalAnswer.get("core_conclusions"));
         List<String> evidence = userTextList(finalAnswer.get("key_evidence"));
+        List<String> conclusionEvidence = conclusionEvidenceTextList(finalAnswer.get("conclusion_evidence"));
         List<String> risks = userTextList(finalAnswer.get("risk_points"));
         List<String> actions = userTextList(finalAnswer.get("next_actions"));
         boolean directReply = "chat".equals(route) || "meta".equals(route);
@@ -252,7 +253,11 @@ public abstract class Agent {
         List<AgentMessageSection> sections = new ArrayList<>();
         addSection(sections, "conclusion", "结论", conclusions);
         if (!directReply) {
-            addSection(sections, "known_info", "已知信息", evidence);
+            if (conclusionEvidence.isEmpty()) {
+                addSection(sections, "known_info", "已知信息", evidence);
+            } else {
+                addSection(sections, "evidence_chain", "结论依据", conclusionEvidence);
+            }
             addSection(sections, "risk", "需要注意", risks);
         }
         addSection(sections, "next_actions", directReply ? "你可以这样问" : "下一步", actions);
@@ -261,8 +266,44 @@ public abstract class Agent {
         message.setNextActions(actions.stream()
                 .map(action -> new AgentNextAction(action, action))
                 .toList());
-        message.setContent(renderMarkdownContent(directReply, conclusions, evidence, risks, actions));
+        message.setContent(renderMarkdownContent(
+                directReply, conclusions, evidence, conclusionEvidence, risks, actions));
         return message;
+    }
+
+    private List<String> conclusionEvidenceTextList(Object value) {
+        List<String> result = new ArrayList<>();
+        if (!(value instanceof List<?> chains)) return result;
+        for (Object rawChain : chains) {
+            Map<String, Object> chain = json.asMap(rawChain);
+            String conclusion = userText(chain.get("conclusion"));
+            if (conclusion.isBlank()) continue;
+            result.add("结论：" + conclusion);
+            Object rawEvidence = chain.get("evidence");
+            if (rawEvidence instanceof List<?> evidenceItems) {
+                for (Object rawItem : evidenceItems) {
+                    Map<String, Object> item = json.asMap(rawItem);
+                    String fact = userText(item.get("fact"));
+                    if (fact.isBlank()) continue;
+                    List<String> metadata = new ArrayList<>();
+                    addMetadata(metadata, "来源", item.get("source_type"));
+                    addMetadata(metadata, "日期", item.get("as_of"));
+                    addMetadata(metadata, "口径", item.get("basis"));
+                    result.add("支持：" + fact
+                            + (metadata.isEmpty() ? "" : "（" + String.join("｜", metadata) + "）"));
+                }
+            }
+            List<String> limitations = userTextList(chain.get("limitations"));
+            for (String limitation : limitations) {
+                result.add("限制：" + limitation);
+            }
+        }
+        return result;
+    }
+
+    private void addMetadata(List<String> metadata, String label, Object value) {
+        String text = userText(value);
+        if (!text.isBlank()) metadata.add(label + "：" + text);
     }
 
     private List<String> userTextList(Object value) {
@@ -320,12 +361,14 @@ public abstract class Agent {
             boolean directReply,
             List<String> conclusions,
             List<String> evidence,
+            List<String> conclusionEvidence,
             List<String> risks,
             List<String> actions) {
         StringBuilder sb = new StringBuilder();
         appendParagraphs(sb, conclusions);
         if (!directReply) {
-            appendListSection(sb, "已知信息", evidence);
+            appendListSection(sb, conclusionEvidence.isEmpty() ? "已知信息" : "结论依据",
+                    conclusionEvidence.isEmpty() ? evidence : conclusionEvidence);
             appendListSection(sb, "需要注意", risks);
         }
         appendListSection(sb, directReply ? "你可以这样问" : "下一步", actions);

@@ -5,7 +5,17 @@ import com.agent.javascope.tool.runtime.ClarificationBusinessProvider;
 import com.agent.javascope.tool.runtime.PlanSafetyValidator;
 import com.agent.javascope.contract.plan.PlanStepDefinition;
 import com.stockmind.application.analysis.TechnicalAnalysisService;
+import com.stockmind.application.analysis.StockInvestmentAnalysisService;
+import com.stockmind.application.dividend.DividendProvider;
+import com.stockmind.application.financial.FinancialReportProvider;
+import com.stockmind.application.factor.*;
+import com.stockmind.application.instrument.InstrumentResolver;
 import com.stockmind.application.market.MarketDataProvider;
+import com.stockmind.application.research.AnalystResearchProvider;
+import com.stockmind.application.risk.SupplementalRiskProvider;
+import com.stockmind.application.sector.SectorDataProvider;
+import com.stockmind.application.snapshot.PointInTimeStockSnapshotService;
+import com.stockmind.bootstrap.business.tool.FinancialReportPeriodResolver;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -23,18 +33,52 @@ public class StockAgentBusinessConfiguration {
     }
 
     @Bean
+    public InstrumentResolver instrumentResolver() {
+        return new InstrumentResolver();
+    }
+
+    @Bean
+    public PointInTimeStockSnapshotService pointInTimeStockSnapshotService(
+            InstrumentResolver instrumentResolver,
+            MarketDataProvider marketDataProvider,
+            FinancialReportProvider financialReportProvider,
+            AnalystResearchProvider analystResearchProvider,
+            DividendProvider dividendProvider,
+            SectorDataProvider sectorDataProvider,
+            SupplementalRiskProvider supplementalRiskProvider) {
+        return new PointInTimeStockSnapshotService(instrumentResolver, marketDataProvider,
+                financialReportProvider, analystResearchProvider, dividendProvider, sectorDataProvider,
+                supplementalRiskProvider);
+    }
+
+    @Bean
+    public StockFactorProfileService stockFactorProfileService(PointInTimeStockSnapshotService snapshots) {
+        return new StockFactorProfileService(snapshots, List.of(
+                new ValuationFactorCalculator(), new QualityFactorCalculator(), new GrowthFactorCalculator(),
+                new ExpectationRevisionFactorCalculator(), new MomentumRiskFactorCalculator(),
+                new ShareholderReturnFactorCalculator()));
+    }
+
+    /** 股票分析中间层不访问外部数据，只解释已经完成口径校验的因子画像。 */
+    @Bean
+    public StockInvestmentAnalysisService stockInvestmentAnalysisService() {
+        return new StockInvestmentAnalysisService();
+    }
+
+    @Bean
+    public ScenarioValuationService scenarioValuationService(PointInTimeStockSnapshotService snapshots) {
+        return new ScenarioValuationService(snapshots);
+    }
+
+    @Bean
     public AgentBusinessPromptCustomizer stockPromptCustomizer() {
         return new AgentBusinessPromptCustomizer() {
             @Override
             public String customizeDirectReplyPrompt(String basePrompt) {
                 return basePrompt + """
 
-                        直答业务规则补充（股票场景）：
-                        - 你是股票分析助手，聚焦个股/板块的事实分析、证据整理与风险提示
-                        - 对非任务型请求（如“你是谁”“你能帮我做什么”），必须直接输出面向用户的自然回答，不得输出“非任务型请求/无需进入工具链”等内部流程描述
-                        - 当用户问“你能帮我做什么”时，core_conclusions 至少包含：你能提供的能力列表 + 1-2条用户可直接输入的示例
-                        - 当用户问“你是谁”时，core_conclusions 应先说明你的股票分析助手角色，再给出可执行帮助范围
-                        - 直答场景禁止承诺实时或确定性投资结论；涉及投资判断时必须提示需要结合行情、新闻、财报等证据进一步分析
+                        股票场景补充：
+                        - 解释股票业务概念或能力范围时直接回答；涉及实时事实和个股价值判断时进入任务流程获取证据。
                         """;
             }
 
@@ -42,28 +86,17 @@ public class StockAgentBusinessConfiguration {
             public String customizeActionPrompt(String basePrompt) {
                 return basePrompt + """
 
-                        角色设定（股票分析助手）：
-                        - 你是一个用于股票分析的助手，聚焦个股/板块的事实分析与风险提示
-
-                        业务规则补充（股票场景）：
-                        - 股票任务中，标的必须明确；用户未给时间范围时不填写具体历史日期，由股票工具统一解析为截至当前日期的近一个月窗口
-                        - 工具结果返回明确 start_date/end_date 或 start_at/end_at 后，下一轮 question_frame.time_window 必须更新为该实际证据窗口，不得继续保留 unknown
-                        - 财报期间与行情时间窗是不同口径；自然语言已明确财报期间时由下游转换为 report_period/report_document，不得因参数格式澄清
-                        - 用户未指定财报期间且现有证据未给出最新已披露期间时，不得凭空选择某个年份或报告期调用 financial_report_metrics；应将该缺口标记为 actionable=false，或使用无需预设期间的替代证据工具
-                        - 用户明确要求分析特定财报但未表达任何年份、报告期或文档时，才把“要分析哪一期财报”作为需澄清的缺失业务语义；综合原因调查不得为此中断用户，应改用替代证据或标记为暂不可执行
-                        - 当任务可单步完成时按需直接调用工具：价格类走行情工具；事件类走新闻工具；财报类走知识库工具
-                        - EPS/PE 任务必须使用 financial_report_metrics 获取结构化财报字段，再使用 financial_metric_calculator 计算；stock_snapshot_analysis 不负责计算财务指标
-                        - 新闻或知识库不可用时，基于已获得的行情与技术证据完成结论，不要重复调用同一工具
-                        - ReAct 调查必须由具体问题和候选解释驱动，不得默认按行情、新闻、知识库、技术指标的固定顺序遍历工具
-                        - ranked_information_gaps 可以保留多个候选缺口；priority 表达信息价值，actionable 表达当前是否具备可用工具和必要输入；每轮选择 priority 最小且 actionable=true 的缺口
-                        - 每次工具调用前必须用 expected_result_branches 给出至少两个结果分支，并说明各分支会如何支持、削弱或区分候选解释；不能改变当前判断的工具不得调用
-                        - 假设状态变化必须引用与该假设直接相关的成功证据步骤并说明 update_reason；价格走势不能直接削弱基本面假设，新闻结果覆盖不足也不能证明事件不存在
-                        - 新工具事实与用户问题中的前提冲突时，以运行时 latest_tool_observations 为准，并优先选择能解决该冲突的证据
-                        - 行情、事件、基本面和技术面仅在与当前信息缺口相关时按需调查，不要求每次回答全部覆盖
-                        - 技术指标只能描述趋势、动量、波动和量价状态，不能单独证明事件原因、恐慌抛售或主力行为
-                        - 当事件和基本面证据不足时，应明确“只能描述价格状态，无法确认具体原因”，不得把相关性写成因果结论
-                        - 涉及“今天/近期”必须给出明确日期，避免模糊时效描述
-                        - 不得把不确定信息表述为确定结论
+                        股票业务指引：
+                        - 查询单项事实时选择对应专用工具；分析投资价值时优先读取 stock_factor_profile 返回的 investment_analysis。
+                        - 工具已经把指标转换为 analysis_signals、investment_theses 和 analysis_agenda。以 investment_stance、业务信号、投资议题和改变条件为分析基础，不从原始指标重新推导另一套口径。
+                        - 不把“具有投资价值/不具有投资价值”作为仅有的两个候选假设。优先把 analysis_agenda 中高权重、高结论敏感度且证据覆盖不足的议题转成待验证假设。
+                        - evidence_needs 描述所需证据，candidate_tools 只是能力候选，不是固定调用链。按预期信息增量选择下一项；一个工具可以同时更新多个议题，无需遍历全部候选工具。
+                        - 补充工具返回后，说明它更新了哪个 agenda_id、证据覆盖如何变化以及是否改变论点。无方向或仅发现级材料可以关闭一次调查动作，但不能伪装成已解决论点。
+                        - unresolved_issues.resolution_status=NOT_AVAILABLE 时使用已有证据形成条件性结论；DISCOVERY_ONLY 表示补充工具只更新材料发现状态。补充工具返回空 business_signals 时不更新投资论点。
+                        - analysis_readiness 是基线画像后的初始充分性判断。只有高敏感度议题已有足够证据，或剩余候选能力不可用/不会改变结论时才停止；不能仅因某个字段 NOT_AVAILABLE 就结束全部分析。
+                        - 综合结论需要同时说明支持因素、反对因素、未知因素以及改变结论的条件。机构预测、新闻和公告按工具返回的证据类型参与相应论点。
+                        - 投资价值回答优先在 final_answer 增加 investment_stance；第一条核心结论明确写出同一立场也可。新增方向性业务信号实质改变立场时，用 stance_revision_signal_ids 说明依据。
+                        - 每条核心结论通过 conclusion_evidence 直接列出支持它的 fact、source_step、source_type、as_of 和 basis，让用户能够看到结论依赖的论据。
                         """;
             }
 
@@ -71,20 +104,11 @@ public class StockAgentBusinessConfiguration {
             public String customizePlanPrompt(String basePrompt) {
                 return basePrompt + """
                         
-                        业务规则补充（股票场景）：
-                        - 计划必须围绕“标的、时间、证据来源”组织，确保结论可追溯
-                        - 财报任务必须使用 report_period/report_document 组织，不得把行情 time_window 当作财报期间；缺少财报期间时不应进入规划器
-                        - “缺少财报期间”按业务语义判断，不按参数字符串判断；例如“2024年第一季度”已经完整，不得因工具需要 2024Q1 或 2024-03-31 而澄清
-                        - EPS/PE 计划必须调用 financial_report_metrics 和 financial_metric_calculator，不得用 knowledge_search 或 stock_snapshot_analysis 冒充结构化取数和计算
-                        - 若缺少标的，不要直接做行情/新闻/知识检索；仅缺时间窗时不要自行填写具体日期，由股票工具统一解析截至当前日期近一个月窗口
-                        - 若用户诉求是“推荐哪些股票”，建议先补齐风险偏好或筛选标准
-                        - 禁止输出空入参调用：每个业务工具都必须包含完成当前步骤所需的最小参数
-                        - 若涉及“今天/近期”，步骤里必须包含时效性核验
-                        - 新闻和知识库属于补充证据，不得作为技术总结的硬依赖；证据不足时基于已获得的数据完成总结并说明待补充维度
-                        - 最终总结必须传入 technical_indicator_snapshot 的结构化 data 作为 technical_data，不能用“技术指标结果”等静态占位文本代替
-                        - stock_snapshot_analysis 返回 analysis_readiness 后，必须先阅读 recommended_next_action：当 ready_for_answer=true 且 recommended_next_action=FINAL_ANSWER 时，应直接输出 final_answer；只有用户问题存在 required_gaps 或能明确说明新增证据价值时，才继续调用 suggested_tools
-                        - 若历史记忆包含 type=business_decision，优先按其中的 completed_scopes 复用已有股票证据；当 recommended_action=FINAL_ANSWER 且 repeat_policy=REUSE_EXISTING_RESULT 时，相同标的、时间窗和数据口径的问题不得重复调用已完成的工具
-                        - stock_snapshot_analysis 的 answer_context 是最终回答的首要业务材料：直接面向用户说明行情、技术判断、综合价值判断和风险，不得把 decision、analysis_readiness、覆盖范围或计划过程写入 final_answer
+                        股票业务计划指引：
+                        - 按“问题 → 必要事实 → 业务信号 → 投资论点 → 结论”组织步骤。
+                        - 综合投资价值使用 stock_factor_profile 的 investment_analysis；围绕 analysis_agenda 的权重、证据覆盖和结论敏感度安排补充步骤。
+                        - 计划选择证据能力，不预设必须遍历某组工具；补充步骤说明将更新的 agenda_id 和预期区分作用。
+                        - 单项查询和指定计算直接使用对应工具，不扩展成完整投资调查。
                         """;
             }
 
@@ -92,9 +116,11 @@ public class StockAgentBusinessConfiguration {
             public String customizeValidationPrompt(String basePrompt) {
                 return basePrompt + """
                         
-                        业务校验补充（股票场景）：
-                        - 结论必须可在 execution_log 找到证据
-                        - 结论跳步或缺证据时 passed=false
+                        股票业务事实校验：
+                        - 数字、日期、口径和来源应能追溯到成功工具结果。
+                        - 投资立场应与业务中间层的 stance 一致；结论应保留相关业务信号的方向、解释边界和未知项。
+                        - 以 conclusion_evidence 中的可读事实和来源判断证据是否充分。
+                        - 新增材料只有在能够更新投资论点时才进入结论；事实、预测、观点和未知状态保持工具定义的证据类型。
                         """;
             }
         };
@@ -345,6 +371,9 @@ public class StockAgentBusinessConfiguration {
                 if (!(source.contains("EPS") && source.contains("PE"))) {
                     return;
                 }
+                boolean hasConsensus = plan.stream()
+                        .anyMatch(step -> "analyst_consensus_forecast".equals(step.getTool()));
+                if (hasConsensus) return;
                 if (!hasExplicitReportPeriod(source)) {
                     errors.add("EPS/PE 任务缺少 report_period 或 report_document；必须先调用 clarify_requirement 获取用户确认");
                 }

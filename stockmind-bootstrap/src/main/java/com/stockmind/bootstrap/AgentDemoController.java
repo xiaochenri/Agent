@@ -18,6 +18,13 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.Set;
+import java.time.LocalDateTime;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -41,6 +48,7 @@ public class AgentDemoController {
     private final CurrentUserProvider currentUserProvider;
     private final UserApplicationService users;
     private final ExecutorService streamExecutor = Executors.newCachedThreadPool();
+    private final ConcurrentMap<String, Set<Future<?>>> runningStreams = new ConcurrentHashMap<>();
 
     public AgentDemoController(
             ReActAgent reActAgent,
@@ -100,8 +108,12 @@ public class AgentDemoController {
     @GetMapping(path = "/api/v1/conversations", produces = MediaType.APPLICATION_JSON_VALUE)
     public List<Conversation> listConversations(
             @RequestParam(name = "businessCode", required = false) String businessCode,
+            @RequestParam(name = "beforeUpdatedAt", required = false) String beforeUpdatedAt,
+            @RequestParam(name = "beforeId", required = false) String beforeId,
             @RequestParam(name = "limit", defaultValue = "50") int limit) {
-        return conversations.list(currentUserId(), businessCode, limit);
+        LocalDateTime cursor = beforeUpdatedAt == null || beforeUpdatedAt.isBlank()
+                ? null : LocalDateTime.parse(beforeUpdatedAt);
+        return conversations.list(currentUserId(), businessCode, cursor, beforeId, limit);
     }
 
     @GetMapping(path = "/api/v1/conversations/{conversationId}", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -131,6 +143,16 @@ public class AgentDemoController {
             @PathVariable("conversationId") String conversationId,
             @RequestBody SendMessageRequest request) {
         return executeAsSse(currentUserId(), conversationId, request.requestId(), request.input());
+    }
+
+    @PostMapping(path = "/api/v1/conversations/{conversationId}/messages/{requestId}/cancel")
+    public Map<String, Object> cancelStream(
+            @PathVariable("conversationId") String conversationId,
+            @PathVariable("requestId") String requestId) {
+        conversations.get(currentUserId(), conversationId);
+        Set<Future<?>> futures = runningStreams.remove(streamKey(conversationId, requestId));
+        boolean cancelled = futures != null && futures.stream().map(future -> future.cancel(true)).anyMatch(Boolean::booleanValue);
+        return Map.of("status", cancelled ? "cancellation_requested" : "not_running", "cancelled", cancelled);
     }
 
     @PatchMapping(path = "/api/v1/conversations/{conversationId}/archive")
@@ -207,11 +229,15 @@ public class AgentDemoController {
     private SseEmitter executeAsSse(
             String userId, String conversationId, String requestId, String input) {
         SseEmitter emitter = new SseEmitter(0L);
-        streamExecutor.execute(() -> {
+        String normalizedRequestId = normalize(requestId, UUID.randomUUID().toString());
+        String key = streamKey(conversationId, normalizedRequestId);
+        Set<Future<?>> futures = runningStreams.computeIfAbsent(key, ignored -> ConcurrentHashMap.newKeySet());
+        AtomicReference<Future<?>> futureRef = new AtomicReference<>();
+        FutureTask<Void> future = new FutureTask<>(() -> {
             try {
                 send(emitter, "process", Map.of("message", "已加载持久化会话上下文"));
                 ChatResponse result = conversations.chatStream(
-                        userId, conversationId, requestId, input,
+                        userId, conversationId, normalizedRequestId, input,
                         event -> sendUnchecked(emitter, eventName(event), event));
                 send(emitter, "meta", Map.of(
                         "conversationId", conversationId,
@@ -222,9 +248,22 @@ public class AgentDemoController {
                 emitter.complete();
             } catch (Exception error) {
                 emitter.completeWithError(error);
+            } finally {
+                futures.remove(futureRef.get());
+                if (futures.isEmpty()) {
+                    runningStreams.remove(key, futures);
+                }
             }
+            return null;
         });
+        futureRef.set(future);
+        futures.add(future);
+        streamExecutor.execute(future);
         return emitter;
+    }
+
+    private String streamKey(String conversationId, String requestId) {
+        return conversationId + ":" + requestId;
     }
 
     private LegacyConversation legacyConversation(ChatRequest request) {
@@ -243,7 +282,7 @@ public class AgentDemoController {
         response.put("reply", result.reply());
         response.put("executionId", result.executionId());
         response.put("cached", result.cached());
-        for (String key : List.of("message", "data", "runtime", "metadata", "status", "route")) {
+        for (String key : List.of("message", "data", "runtime", "metadata", "status", "route", "insights")) {
             if (result.payload().containsKey(key)) {
                 response.put(key, result.payload().get(key));
             }

@@ -227,6 +227,7 @@ public class FinalAnswerSynthesizer {
                 && !json.normalize(validation.nextAction().getInstruction(), "").isBlank()) {
             feedback.add("next_action=" + validation.nextAction().getInstruction());
         }
+        feedback.add("若已有成功工具证据，必须为每条core_conclusions补齐conclusion_evidence，包含fact、source_step、source_type、as_of和basis");
         feedback.add("suggest_replan=" + validation.suggestReplan());
         if (validation.suggestReplan()) {
             if ("planned".equals(executionMode)) {

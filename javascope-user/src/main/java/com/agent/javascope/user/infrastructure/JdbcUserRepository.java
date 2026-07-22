@@ -41,6 +41,13 @@ public class JdbcUserRepository {
                     UNIQUE KEY uk_app_user_email (email)
                 )
                 """);
+        Integer passwordHashColumn = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.COLUMNS
+                WHERE table_schema = DATABASE() AND table_name = 'app_user' AND column_name = 'password_hash'
+                """, Integer.class);
+        if (passwordHashColumn == null || passwordHashColumn == 0) {
+            jdbcTemplate.execute("ALTER TABLE app_user ADD COLUMN password_hash VARCHAR(255) NULL");
+        }
     }
 
     public void ensureExists(String userId) {
@@ -58,6 +65,28 @@ public class JdbcUserRepository {
                        status, created_at, updated_at
                 FROM app_user WHERE id = ?
                 """, MAPPER, userId).stream().findFirst();
+    }
+
+    public Optional<UserAccount> findByUsername(String username) {
+        return jdbcTemplate.query("""
+                SELECT id, username, display_name, avatar_url, email, mobile,
+                       status, created_at, updated_at
+                FROM app_user WHERE username = ?
+                """, MAPPER, username).stream().findFirst();
+    }
+
+    public Optional<String> passwordHash(String userId) {
+        return jdbcTemplate.query("SELECT password_hash FROM app_user WHERE id = ?", (rs, rowNum) ->
+                rs.getString("password_hash"), userId).stream().findFirst();
+    }
+
+    public UserAccount create(String userId, String username, String displayName, String passwordHash) {
+        LocalDateTime now = LocalDateTime.now();
+        jdbcTemplate.update("""
+                INSERT INTO app_user(id, username, display_name, password_hash, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'active', ?, ?)
+                """, userId, username, displayName, passwordHash, Timestamp.valueOf(now), Timestamp.valueOf(now));
+        return findById(userId).orElseThrow();
     }
 
     public UserAccount updateProfile(String userId, String displayName, String avatarUrl) {

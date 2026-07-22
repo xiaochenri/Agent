@@ -14,6 +14,7 @@ import com.agent.javascope.tool.runtime.ToolExecutionStatus;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -34,6 +35,7 @@ public final class ToolFailureRecoveryAcceptanceTest {
         verifyAllExecutionModesRecordFinalFailure();
         verifyModifiedInputAndDependencyRecovery();
         verifyActiveFailuresSurviveProjectionAndPromptBudget();
+        verifyDecisionFieldsSurviveToolObservationCompaction();
     }
 
     private void verifyAllExecutionModesRecordFinalFailure() {
@@ -105,6 +107,29 @@ public final class ToolFailureRecoveryAcceptanceTest {
         require(reactPrompt.contains("\"selected_tool\""), "ReAct 调查更新缺少声明工具字段");
         require(reactPrompt.contains("\"investigation_state\""), "ReAct Prompt 缺少跨轮调查状态");
         require(reactPrompt.contains("贵州茅台"), "预算裁剪后跨轮调查状态内容不可达");
+    }
+
+    private void verifyDecisionFieldsSurviveToolObservationCompaction() {
+        Map<String, Object> data = new LinkedHashMap<>();
+        for (int i = 0; i < 15; i++) data.put("ordinary_" + i, i);
+        data.put("directional_conclusion_allowed", true);
+        data.put("claim_permissions", Map.of("high_roe", false));
+        data.put("evidence_gaps", List.of("ANNUAL_ROE_EVIDENCE_UNAVAILABLE"));
+        data.put("follow_up_policy", Map.of("mode", "ADVISORY",
+                "suggested_tools", List.of("financial_trend_analysis")));
+        data.put("key_metrics", Map.of("pe_ttm", Map.of("raw_value", 18.7, "quality", "VALID")));
+        Map<String, Object> log = Map.of(
+                "step", "tool_call_round_1", "tool_name", "stock_factor_profile", "input", Map.of(),
+                "output", Map.of("status", "success", "validation_passed", true, "data", data));
+        ContextRequest request = new ContextRequest(
+                json.toTree(List.of()), json.toTree(Map.of()), json.toTree(List.of(log)),
+                json.toTree(List.of()), json.toTree(List.of()), json.toTree(List.of()), "", json.toTree(List.of()));
+        WorkingContext context = new InMemoryContextManager().project(request, new PromptBudget(10_000, 1, 2));
+        var keyData = context.latestObservations().get(0).path("key_data");
+        require(keyData.has("directional_conclusion_allowed") && keyData.has("claim_permissions")
+                        && keyData.has("evidence_gaps") && keyData.has("follow_up_policy")
+                        && keyData.has("key_metrics"),
+                "业务决策字段因JSON字段顺序被上下文压缩器裁掉");
     }
 
     private ToolExecutionResult failed(String code, String message) {

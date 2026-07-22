@@ -65,7 +65,7 @@ public class TencentMarketDataProvider implements MarketDataProvider {
     @Override
     public MarketQuote loadQuote(String instrumentId) {
         String symbol = normalizeSymbol(instrumentId);
-        String providerSymbol = providerSymbol(symbol);
+        String providerSymbol = providerSymbol(instrumentId, symbol);
         try {
             HttpRequest request = request(URI.create(quoteUrl + providerSymbol)).build();
             HttpResponse<byte[]> response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
@@ -78,7 +78,7 @@ public class TencentMarketDataProvider implements MarketDataProvider {
             int lastQuote = payload.lastIndexOf('"');
             if (firstQuote < 0 || lastQuote <= firstQuote) throw notFound(symbol);
             String[] values = payload.substring(firstQuote + 1, lastQuote).split("~", -1);
-            if (values.length < 33 || values[3].isBlank()) throw notFound(symbol);
+            if (values.length < 53 || values[3].isBlank()) throw notFound(symbol);
             BigDecimal price = decimal(values[3]);
             BigDecimal previousClose = decimal(values[4]);
             BigDecimal changePct = values[32].isBlank()
@@ -89,8 +89,13 @@ public class TencentMarketDataProvider implements MarketDataProvider {
             Instant asOf = values[30].isBlank() ? Instant.now()
                     : LocalDateTime.parse(values[30], QUOTE_TIME).atZone(CHINA_ZONE).toInstant();
             return new MarketQuote(symbol, datasetId("quote", symbol, values[30]), SOURCE, asOf,
-                    price, previousClose, changePct, decimal(values[6]),
-                    List.of("腾讯成交量字段单位为手（1手=100股）。"));
+                    values[1], price, previousClose, decimalOrZero(values[5]), decimalOrZero(values[33]),
+                    decimalOrZero(values[34]), decimalOrZero(values[31]), changePct, decimalOrZero(values[6]),
+                    decimalOrZero(values[37]), decimalOrZero(values[38]), decimalOrZero(values[39]),
+                    decimalOrZero(values[46]), decimalOrZero(values[44]), decimalOrZero(values[45]),
+                    decimalOrZero(values[47]), decimalOrZero(values[48]), decimalOrZero(values[49]),
+                    List.of("腾讯成交量字段单位为手（1手=100股）。",
+                            "腾讯成交额字段单位为万元，市值字段单位为亿元，换手率字段单位为百分比。"));
         } catch (MarketDataNotFoundException e) {
             throw e;
         } catch (Exception e) {
@@ -101,11 +106,11 @@ public class TencentMarketDataProvider implements MarketDataProvider {
     @Override
     public BarDataset loadBars(HistoricalBarsQuery query) {
         String symbol = normalizeSymbol(query.instrumentId());
-        String providerSymbol = providerSymbol(symbol);
+        String providerSymbol = providerSymbol(query.instrumentId(), symbol);
         String adjustment = adjustmentParameter(query.adjustment());
         String dataKey = adjustment.isBlank() ? "day" : adjustment + "day";
         long requestedDays = ChronoUnit.DAYS.between(query.startDate(), query.endDate()) + 30;
-        long count = Math.max(80, Math.min(1000, requestedDays));
+        long count = Math.max(80, Math.min(1800, requestedDays));
         String param = String.join(",", providerSymbol, "day", query.startDate().toString(),
                 query.endDate().toString(), String.valueOf(count)) + (adjustment.isBlank() ? "" : "," + adjustment);
         URI uri = URI.create(klineUrl + "?param=" + URLEncoder.encode(param, StandardCharsets.UTF_8));
@@ -116,6 +121,11 @@ public class TencentMarketDataProvider implements MarketDataProvider {
             }
             JsonNode root = objectMapper.readTree(response.body());
             JsonNode rows = root.path("data").path(providerSymbol).path(dataKey);
+            // Tencent indices and some funds ignore qfq/hfq and expose only the raw day series.
+            // Falling back is safe for instruments that do not have corporate-action adjustments.
+            if (!rows.isArray() && !adjustment.isBlank()) {
+                rows = root.path("data").path(providerSymbol).path("day");
+            }
             if (!rows.isArray()) throw notFound(symbol);
             List<MarketBar> bars = new ArrayList<>();
             for (JsonNode row : rows) {
@@ -156,6 +166,14 @@ public class TencentMarketDataProvider implements MarketDataProvider {
     }
 
     static String providerSymbol(String symbol) {
+        return providerSymbol(symbol, normalizeSymbol(symbol));
+    }
+
+    static String providerSymbol(String original, String symbol) {
+        String normalized = original == null ? "" : original.trim().toUpperCase();
+        if (normalized.startsWith("SH") || normalized.endsWith(".SH")) return "sh" + symbol;
+        if (normalized.startsWith("SZ") || normalized.endsWith(".SZ")) return "sz" + symbol;
+        if (normalized.startsWith("BJ") || normalized.endsWith(".BJ")) return "bj" + symbol;
         if (symbol.startsWith("6") || symbol.startsWith("9")) return "sh" + symbol;
         if (symbol.startsWith("8") || symbol.startsWith("4")) return "bj" + symbol;
         return "sz" + symbol;
@@ -171,6 +189,10 @@ public class TencentMarketDataProvider implements MarketDataProvider {
 
     private BigDecimal decimal(String value) {
         return new BigDecimal(value);
+    }
+
+    private BigDecimal decimalOrZero(String value) {
+        return value == null || value.isBlank() ? BigDecimal.ZERO : decimal(value);
     }
 
     private MarketDataNotFoundException notFound(String symbol) {

@@ -1,7 +1,6 @@
 package com.stockmind.application.market;
 
 import java.time.LocalDate;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -28,14 +27,10 @@ public final class StockTimeWindowResolver {
         if (requestedStart.isAfter(requestedEnd)) {
             throw new IllegalArgumentException("start_date 不能晚于 end_date");
         }
-        boolean stale = requestedEnd.isBefore(today.minusDays(7));
-        LocalDate resolvedEnd = stale ? today : requestedEnd;
-        LocalDate resolvedStart = stale ? resolvedEnd.minusDays(DEFAULT_DECISION_DAYS) : requestedStart;
-        List<String> warnings = new ArrayList<>();
-        if (stale) {
-            warnings.add("请求截止日期 " + requestedEnd + " 已自动更新为当前日期 " + resolvedEnd + " 的近一个月决策窗口。");
-        }
-        return new ResolvedTimeWindow(resolvedStart, resolvedEnd, List.copyOf(warnings));
+        // Explicit historical windows are evidence constraints, not stale defaults. Silently
+        // replacing them with the latest month makes filings and event searches answer a
+        // different question from the one requested by the caller.
+        return new ResolvedTimeWindow(requestedStart, requestedEnd, List.of());
     }
 
     /** Resolves a news time_window string, including the plan format yyyy-MM-dd至yyyy-MM-dd. */

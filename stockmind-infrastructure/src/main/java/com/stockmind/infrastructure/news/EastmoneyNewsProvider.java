@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stockmind.application.news.NewsArticle;
 import com.stockmind.application.news.NewsProvider;
+import com.stockmind.application.news.SearchRelevancePolicy;
+import com.stockmind.infrastructure.eastmoney.EastmoneyRequestGate;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -15,8 +17,8 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
-import java.util.concurrent.ThreadLocalRandom;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -31,58 +33,68 @@ public class EastmoneyNewsProvider implements NewsProvider {
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final String endpoint;
-    private final long minimumIntervalMillis;
-    private final Object throttleLock = new Object();
-    private long lastRequestAt;
+    private final EastmoneyRequestGate requestGate;
 
     @Autowired
     public EastmoneyNewsProvider(
             @Value("${stockmind.news.eastmoney.url:https://search-api-web.eastmoney.com/search/jsonp}") String endpoint,
-            @Value("${stockmind.news.eastmoney.minimum-interval-millis:1200}") long minimumIntervalMillis) {
+            EastmoneyRequestGate requestGate) {
         this(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build(), new ObjectMapper(),
-                endpoint, minimumIntervalMillis);
+                endpoint, requestGate);
     }
 
     EastmoneyNewsProvider(HttpClient httpClient, ObjectMapper objectMapper, String endpoint,
                           long minimumIntervalMillis) {
+        this(httpClient, objectMapper, endpoint,
+                new EastmoneyRequestGate(minimumIntervalMillis, 0, 60_000, 2_000));
+    }
+
+    EastmoneyNewsProvider(HttpClient httpClient, ObjectMapper objectMapper, String endpoint,
+                          EastmoneyRequestGate requestGate) {
         this.httpClient = httpClient;
         this.objectMapper = objectMapper;
         this.endpoint = endpoint;
-        this.minimumIntervalMillis = Math.max(0, minimumIntervalMillis);
+        this.requestGate = requestGate;
     }
 
     @Override
     public List<NewsArticle> search(String keyword, LocalDate startDate, LocalDate endDate, int limit) {
         if (keyword == null || keyword.isBlank()) throw new IllegalArgumentException("keyword 不能为空");
         int pageSize = Math.max(1, Math.min(100, limit));
+        int fetchSize = Math.min(100, Math.max(pageSize, pageSize * 5));
         try {
-            String inner = objectMapper.writeValueAsString(buildRequest(keyword.trim(), pageSize));
+            String inner = objectMapper.writeValueAsString(buildRequest(keyword.trim(), fetchSize));
             String query = "cb=" + encode(CALLBACK) + "&param=" + encode(inner);
-            throttle();
             HttpRequest request = HttpRequest.newBuilder(URI.create(endpoint + "?" + query))
                     .timeout(Duration.ofSeconds(15))
                     .header("User-Agent", USER_AGENT)
                     .header("Referer", "https://so.eastmoney.com/")
                     .GET().build();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            var response = requestGate.get(httpClient, request);
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 throw new IllegalStateException("东财新闻接口响应状态 " + response.statusCode());
             }
             JsonNode root = objectMapper.readTree(unwrapJsonp(response.body()));
             JsonNode articles = root.path("result").path("cmsArticleWebOld");
             if (!articles.isArray()) return List.of();
-            List<NewsArticle> results = new ArrayList<>();
+            List<RankedArticle> ranked = new ArrayList<>();
             for (JsonNode article : articles) {
                 LocalDateTime publishedAt = parseTime(article.path("date").asText());
                 if (publishedAt == null || publishedAt.toLocalDate().isBefore(startDate)
                         || publishedAt.toLocalDate().isAfter(endDate)) continue;
-                results.add(new NewsArticle(
-                        article.path("code").asText(), cleanHtml(article.path("title").asText()),
-                        truncate(cleanHtml(article.path("content").asText()), 500),
-                        article.path("mediaName").asText(), article.path("url").asText(), publishedAt));
-                if (results.size() >= pageSize) break;
+                String title = cleanHtml(article.path("title").asText());
+                String summary = truncate(cleanHtml(article.path("content").asText()), 500);
+                var relevance = SearchRelevancePolicy.assess(keyword, title, summary);
+                if (!relevance.relevant()) continue;
+                ranked.add(new RankedArticle(new NewsArticle(
+                        article.path("code").asText(), title, summary,
+                        article.path("mediaName").asText(), article.path("url").asText(), publishedAt),
+                        relevance.score()));
             }
-            return List.copyOf(results);
+            return ranked.stream()
+                    .sorted(Comparator.comparingInt(RankedArticle::score).reversed()
+                            .thenComparing(value -> value.article().publishedAt(), Comparator.reverseOrder()))
+                    .limit(pageSize).map(RankedArticle::article).toList();
         } catch (IllegalArgumentException e) {
             throw e;
         } catch (Exception e) {
@@ -97,14 +109,6 @@ public class EastmoneyNewsProvider implements NewsProvider {
                 "param", java.util.Map.of("cmsArticleWebOld", java.util.Map.of(
                         "searchScope", "default", "sort", "default", "pageIndex", 1,
                         "pageSize", pageSize, "preTag", "", "postTag", "")));
-    }
-
-    private void throttle() throws InterruptedException {
-        synchronized (throttleLock) {
-            long wait = minimumIntervalMillis - (System.currentTimeMillis() - lastRequestAt);
-            if (wait > 0) Thread.sleep(wait + ThreadLocalRandom.current().nextLong(100, 401));
-            lastRequestAt = System.currentTimeMillis();
-        }
     }
 
     static String unwrapJsonp(String value) {
@@ -133,4 +137,6 @@ public class EastmoneyNewsProvider implements NewsProvider {
     private String truncate(String value, int length) {
         return value.length() <= length ? value : value.substring(0, length);
     }
+
+    private record RankedArticle(NewsArticle article, int score) {}
 }

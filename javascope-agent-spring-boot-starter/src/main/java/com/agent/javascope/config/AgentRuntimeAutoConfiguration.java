@@ -34,6 +34,7 @@ import com.agent.javascope.tools.planning.RevisePlanTool;
 import com.agent.javascope.tools.validation.StepValidatorTool;
 import com.agent.javascope.json.AgentJsonCodecUtil;
 import com.agent.javascope.verifier.IndependentVerifierService;
+import com.agent.javascope.verifier.FinalAnswerSemanticValidator;
 import com.agent.javascope.agent.runtime.ReActAgent;
 import com.agent.javascope.agent.prompt.DefaultPromptAssembler;
 import com.agent.javascope.agent.prompt.PromptAssembler;
@@ -274,8 +275,12 @@ public class AgentRuntimeAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean
     public IndependentVerifierService independentVerifierService(
-            AgentPromptProvider promptProvider, AgentChatModelClient agentChatModelClient, AgentJsonCodecUtil json) {
-        return new IndependentVerifierService(promptProvider, agentChatModelClient, json);
+            AgentPromptProvider promptProvider,
+            AgentChatModelClient agentChatModelClient,
+            AgentJsonCodecUtil json,
+            ObjectProvider<FinalAnswerSemanticValidator> semanticValidators) {
+        return new IndependentVerifierService(
+                promptProvider, agentChatModelClient, json, semanticValidators.orderedStream().toList());
     }
 
     @Bean

@@ -76,10 +76,61 @@ public class TechnicalAnalysisService {
         result.put("interval", "realtime");
         result.put("adjustment", "NONE");
         result.put("warnings", quote.warnings());
+        result.put("name", quote.name());
         result.put("price", n(quote.price()));
         result.put("previous_close", n(quote.previousClose()));
+        result.put("open", n(quote.open()));
+        result.put("high", n(quote.high()));
+        result.put("low", n(quote.low()));
+        result.put("daily_change_amount", n(quote.dailyChangeAmount()));
         result.put("daily_change_pct", n(quote.dailyChangePct()));
         result.put("volume", quote.volume().longValue());
+        result.put("amount_wan", n(quote.amount()));
+        result.put("turnover_pct", n(quote.turnoverPct()));
+        result.put("pe_ttm", n(quote.peTtm()));
+        result.put("pb", n(quote.pb()));
+        result.put("market_cap_yi", n(quote.marketCapYi()));
+        result.put("float_market_cap_yi", n(quote.floatMarketCapYi()));
+        result.put("limit_up", n(quote.limitUp()));
+        result.put("limit_down", n(quote.limitDown()));
+        result.put("volume_ratio", n(quote.volumeRatio()));
+        return result;
+    }
+
+    public Map<String, Object> priceMoveAnalysis(String symbol, String start, String end, String adjustment) {
+        BarDataset dataset = loadRequested(symbol, start, end, adjustment);
+        Map<String, Object> result = base(dataset);
+        result.put("move", MarketSeriesSummarizer.summarize(dataset.bars()));
+        result.put("limitations", List.of("价格区间分析确认走势和量价结构，但不能单独证明涨跌原因。"));
+        return result;
+    }
+
+    public Map<String, Object> benchmarkPerformance(String symbol, String benchmark, String start,
+                                                     String end, String adjustment) {
+        BarDataset stock = loadRequested(symbol, start, end, adjustment);
+        LocalDate actualStart = stock.bars().getFirst().closeTime().atZone(ZoneId.of("Asia/Shanghai")).toLocalDate();
+        LocalDate actualEnd = stock.bars().getLast().closeTime().atZone(ZoneId.of("Asia/Shanghai")).toLocalDate();
+        String benchmarkId = benchmark == null || benchmark.isBlank() ? "SH000300" : benchmark.trim().toUpperCase(Locale.ROOT);
+        BarDataset index = marketDataProvider.loadBars(new HistoricalBarsQuery(benchmarkId, BarInterval.DAY_1,
+                actualStart, actualEnd, parseAdjustment(adjustment)));
+        Map<String, Object> stockMove = MarketSeriesSummarizer.summarize(stock.bars());
+        Map<String, Object> benchmarkMove = MarketSeriesSummarizer.summarize(index.bars());
+        double stockReturn = ((BigDecimal) stockMove.get("period_change_pct")).doubleValue();
+        double benchmarkReturn = ((BigDecimal) benchmarkMove.get("period_change_pct")).doubleValue();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("symbol", stock.bars().getFirst().instrumentId());
+        result.put("benchmark", benchmarkId);
+        result.put("start_at", stock.bars().getFirst().closeTime().toString());
+        result.put("end_at", stock.bars().getLast().closeTime().toString());
+        result.put("source", stock.source());
+        result.put("stock_return_pct", n(stockReturn));
+        result.put("benchmark_return_pct", n(benchmarkReturn));
+        result.put("relative_return_pct", n(stockReturn - benchmarkReturn));
+        result.put("stock_move", stockMove);
+        result.put("benchmark_move", benchmarkMove);
+        result.put("interpretation", stockReturn - benchmarkReturn < 0
+                ? "UNDERPERFORMED_BENCHMARK" : stockReturn - benchmarkReturn > 0
+                ? "OUTPERFORMED_BENCHMARK" : "MATCHED_BENCHMARK");
         return result;
     }
 
@@ -282,9 +333,15 @@ public class TechnicalAnalysisService {
     private BarDataset loadRequested(String symbol, String start, String end, String adjustment) {
         if (symbol == null || symbol.isBlank()) throw new IllegalArgumentException("symbol 不能为空");
         StockTimeWindowResolver.ResolvedTimeWindow window = StockTimeWindowResolver.resolve(start, end);
-        BarDataset dataset = marketDataProvider.loadBars(new HistoricalBarsQuery(
-                symbol.trim().toUpperCase(Locale.ROOT), BarInterval.DAY_1, window.startDate(), window.endDate(),
-                parseAdjustment(adjustment)));
+        AdjustmentMode adjustmentMode = parseAdjustment(adjustment);
+        BarDataset dataset;
+        try {
+            dataset = marketDataProvider.loadBars(new HistoricalBarsQuery(
+                    symbol.trim().toUpperCase(Locale.ROOT), BarInterval.DAY_1, window.startDate(), window.endDate(),
+                    adjustmentMode));
+        } catch (MarketDataNotFoundException error) {
+            dataset = fallbackSingleDateWindow(symbol, window, adjustmentMode, error);
+        }
         if (dataset.bars().isEmpty()) {
             throw new MarketDataNotFoundException("指定时间范围内没有可用的已收盘K线");
         }
@@ -297,18 +354,45 @@ public class TechnicalAnalysisService {
     }
 
     /**
+     * A point-in-time market request can land on a weekend, holiday, or before the close.
+     * Return the nearest preceding trading observations rather than treating the stock as missing.
+     */
+    private BarDataset fallbackSingleDateWindow(
+            String symbol, StockTimeWindowResolver.ResolvedTimeWindow window,
+            AdjustmentMode adjustment, MarketDataNotFoundException original) {
+        if (!window.startDate().equals(window.endDate())) throw original;
+        BarDataset fallback = marketDataProvider.loadBars(new HistoricalBarsQuery(
+                symbol.trim().toUpperCase(Locale.ROOT), BarInterval.DAY_1,
+                window.endDate().minusDays(30), window.endDate(), adjustment));
+        if (fallback.bars().isEmpty()) throw original;
+        List<String> warnings = new ArrayList<>(fallback.warnings());
+        warnings.add("指定日期无已收盘行情，已回溯至最近30日内可用交易日。");
+        return new BarDataset(fallback.datasetId(), fallback.bars(), fallback.source(), fallback.asOf(), List.copyOf(warnings));
+    }
+
+    /**
      * Loads extra history for indicator warm-up while keeping raw K-line output compact.
      */
     private BarDataset loadForIndicators(String symbol, String start, String end, String adjustment) {
-        BarDataset decisionWindow = loadRequested(symbol, start, end, adjustment);
-        LocalDate endDate = decisionWindow.bars().getLast().closeTime().atZone(java.time.ZoneOffset.UTC).toLocalDate();
-        LocalDate lookbackStart = decisionWindow.bars().getFirst().openTime().atZone(java.time.ZoneOffset.UTC)
-                .toLocalDate().minusDays(150);
+        StockTimeWindowResolver.ResolvedTimeWindow window = StockTimeWindowResolver.resolve(start, end);
+        // Indicator requests are often generated with the same as_of date for start and end.
+        // That date may be a weekend, a holiday, or an unfinished trading day. Fetching the
+        // preceding decision window makes a support/resistance query resilient while still
+        // ending at the user's requested as_of date.
+        boolean pointInTimeRequest = !window.startDate().isBefore(window.endDate());
+        LocalDate decisionStart = pointInTimeRequest ? window.endDate().minusDays(30) : window.startDate();
+        LocalDate lookbackStart = decisionStart.minusDays(150);
         BarDataset dataset = marketDataProvider.loadBars(new HistoricalBarsQuery(
-                decisionWindow.bars().getFirst().instrumentId(), BarInterval.DAY_1, lookbackStart, endDate,
-                decisionWindow.bars().getFirst().adjustment()));
-        List<String> warnings = new ArrayList<>(decisionWindow.warnings());
+                symbol.trim().toUpperCase(Locale.ROOT), BarInterval.DAY_1, lookbackStart, window.endDate(),
+                parseAdjustment(adjustment)));
+        if (dataset.bars().isEmpty()) {
+            throw new MarketDataNotFoundException("指定时间范围内没有可用的已收盘K线");
+        }
+        List<String> warnings = new ArrayList<>(dataset.warnings());
         warnings.add("技术指标已使用额外历史数据完成预热计算。");
+        if (pointInTimeRequest) {
+            warnings.add("请求日期为单日，已自动回溯30个自然日以获取最近可用交易日。");
+        }
         return new BarDataset(dataset.datasetId(), dataset.bars(), dataset.source(), dataset.asOf(), List.copyOf(warnings));
     }
 
