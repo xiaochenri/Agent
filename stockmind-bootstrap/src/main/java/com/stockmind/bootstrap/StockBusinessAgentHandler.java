@@ -5,22 +5,31 @@ import com.agent.javascope.user.conversation.ConversationMessage;
 import com.agent.javascope.user.port.AgentChatCommand;
 import com.agent.javascope.user.port.AgentChatResult;
 import com.agent.javascope.user.port.BusinessAgentHandler;
+import com.stockmind.bootstrap.usage.StockUsageAuditService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Consumer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 @Component
 public class StockBusinessAgentHandler implements BusinessAgentHandler {
 
+    private static final Logger LOG = LoggerFactory.getLogger(StockBusinessAgentHandler.class);
     private final ReActAgent agent;
     private final ObjectMapper objectMapper;
+    private final StockUsageAuditService usageAudit;
 
-    public StockBusinessAgentHandler(ReActAgent agent, ObjectMapper objectMapper) {
+    public StockBusinessAgentHandler(
+            ReActAgent agent,
+            ObjectMapper objectMapper,
+            StockUsageAuditService usageAudit) {
         this.agent = agent;
         this.objectMapper = objectMapper;
+        this.usageAudit = usageAudit;
     }
 
     @Override
@@ -30,16 +39,28 @@ public class StockBusinessAgentHandler implements BusinessAgentHandler {
 
     @Override
     public AgentChatResult chat(AgentChatCommand command) {
+        long startedNanos = System.nanoTime();
         String rawReply = agent.call(buildPrompt(command), command.conversationId(), command.userId());
-        return toResult(rawReply);
+        return recordUsage(command, toResult(rawReply), startedNanos);
     }
 
     @Override
     public AgentChatResult chatStream(
             AgentChatCommand command, Consumer<Map<String, Object>> eventConsumer) {
+        long startedNanos = System.nanoTime();
         String rawReply = agent.callWithModelStream(
                 buildPrompt(command), command.conversationId(), command.userId(), eventConsumer);
-        return toResult(rawReply);
+        return recordUsage(command, toResult(rawReply), startedNanos);
+    }
+
+    private AgentChatResult recordUsage(AgentChatCommand command, AgentChatResult result, long startedNanos) {
+        try {
+            usageAudit.recordExecution(command.userId(), command.conversationId(), result.executionId(),
+                    result.payload(), startedNanos);
+        } catch (RuntimeException error) {
+            LOG.warn("Stock usage audit write failed, executionId={}", result.executionId(), error);
+        }
+        return result;
     }
 
     private AgentChatResult toResult(String rawReply) {

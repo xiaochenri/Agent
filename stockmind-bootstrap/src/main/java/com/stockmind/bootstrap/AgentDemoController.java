@@ -10,6 +10,7 @@ import com.agent.javascope.user.identity.CurrentUserProvider;
 import com.agent.javascope.user.identity.UserAccount;
 import com.agent.javascope.user.memory.UserMemory;
 import com.agent.javascope.user.memory.UserMemoryService;
+import com.stockmind.bootstrap.usage.StockUsageAuditService;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -47,6 +48,7 @@ public class AgentDemoController {
     private final UserMemoryService memories;
     private final CurrentUserProvider currentUserProvider;
     private final UserApplicationService users;
+    private final StockUsageAuditService usageAudit;
     private final ExecutorService streamExecutor = Executors.newCachedThreadPool();
     private final ConcurrentMap<String, Set<Future<?>>> runningStreams = new ConcurrentHashMap<>();
 
@@ -55,12 +57,14 @@ public class AgentDemoController {
             ConversationApplicationService conversations,
             UserMemoryService memories,
             CurrentUserProvider currentUserProvider,
-            UserApplicationService users) {
+            UserApplicationService users,
+            StockUsageAuditService usageAudit) {
         this.reActAgent = reActAgent;
         this.conversations = conversations;
         this.memories = memories;
         this.currentUserProvider = currentUserProvider;
         this.users = users;
+        this.usageAudit = usageAudit;
     }
 
     @GetMapping("/api/agent/demo")
@@ -160,6 +164,24 @@ public class AgentDemoController {
             @PathVariable("conversationId") String conversationId) {
         conversations.archive(currentUserId(), conversationId);
         return Map.of("status", "archived");
+    }
+
+    /** Explicit answer helpfulness, goal achievement, or predefined failure reason. */
+    @PostMapping(path = "/api/v1/executions/{executionId}/feedback", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Map<String, String> submitExecutionFeedback(
+            @PathVariable("executionId") String executionId,
+            @RequestBody FeedbackRequest request) {
+        usageAudit.submitFeedback(currentUserId(), executionId, request.type(), request.value());
+        return Map.of("status", "recorded");
+    }
+
+    /** Product behavior events are intentionally whitelisted; arbitrary client properties are never persisted. */
+    @PostMapping(path = "/api/v1/executions/{executionId}/behavior", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Map<String, String> recordExecutionBehavior(
+            @PathVariable("executionId") String executionId,
+            @RequestBody BehaviorRequest request) {
+        usageAudit.recordBehavior(currentUserId(), executionId, request.eventName());
+        return Map.of("status", "recorded");
     }
 
     /** Backward-compatible endpoint. New clients should create a conversation and use /api/v1. */
@@ -371,6 +393,10 @@ public class AgentDemoController {
     public record MemoryUpsertRequest(Object value, Long ttlSeconds) { }
 
     public record UpdateProfileRequest(String displayName, String avatarUrl) { }
+
+    public record FeedbackRequest(String type, String value) { }
+
+    public record BehaviorRequest(String eventName) { }
 
     private record LegacyConversation(String userId, String externalId, String internalId) { }
 
